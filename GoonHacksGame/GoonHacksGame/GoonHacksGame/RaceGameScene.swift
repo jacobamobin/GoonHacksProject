@@ -16,8 +16,7 @@ class RaceGameScene: SKScene {
 
     var gameCoordinator: GameCoordinator?
     var gameState: GameState!
-    var fluidField: FluidField!
-    var physicsWeights = PhysicsWeights()
+    var physicsWeights = PhysicsWeights()  // No more fluidField!
 
     // Scene nodes
     var trackNode: SKNode!
@@ -65,19 +64,13 @@ class RaceGameScene: SKScene {
 
         setupScene()
         setupCamera()
-        setupTrack()
+        setupDynamicTrack()  // NEW: curved track
         setupCheckpoints()
         setupRacers()
         setupUI()
-        setupFluidField()
 
-        // Start race after short delay
-        run(SKAction.sequence([
-            SKAction.wait(forDuration: 1.0),
-            SKAction.run { [weak self] in
-                self?.startRace()
-            }
-        ]))
+        // Start race immediately - NO COUNTDOWN
+        startRace()
     }
 
     // MARK: - Setup
@@ -109,99 +102,151 @@ class RaceGameScene: SKScene {
         camera = gameCamera
         addChild(gameCamera)
 
-        // Position camera to start at bottom
+        // ZOOM OUT MORE - higher number = more zoomed out
+        gameCamera.setScale(2.5)
+
+        // Position camera at start
         gameCamera.position = CGPoint(x: 0, y: size.height / 2)
     }
 
-    private func setupTrack() {
-        // Vertical track with glow walls
-        createTrackWalls()
-        createTrackBackground()
+    private func setupDynamicTrack() {
+        // Generate curved track path
+        let trackPath = TrackGenerator.generateCurvedTrack(
+            width: 350,  // Curve width
+            height: trackHeight,
+            segments: 60,  // Smoothness
+            curveIntensity: 0.35  // How curvy
+        )
+
+        gameState.trackPath = trackPath
+
+        // Render the track visually
+        renderCurvedTrack(trackPath)
+
+        // Generate obstacles
+        gameState.obstacles = TrackGenerator.generateObstacles(
+            alongPath: trackPath,
+            count: 12
+        )
+
+        // Render obstacles
+        for obstacle in gameState.obstacles {
+            let obstacleNode = SKShapeNode(rect: obstacle, cornerRadius: 10)
+            obstacleNode.fillColor = SKColor(red: 0.8, green: 0.2, blue: 0.2, alpha: 0.6)
+            obstacleNode.strokeColor = SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 1.0)
+            obstacleNode.lineWidth = 3
+            obstacleNode.glowWidth = 10
+            obstacleNode.zPosition = 8
+            trackNode.addChild(obstacleNode)
+        }
     }
 
-    private func createTrackWalls() {
-        let wallWidth: CGFloat = 20
-        let glowColor = SKColor(red: 0.2, green: 0.8, blue: 1.0, alpha: 0.8)
+    private func renderCurvedTrack(_ path: [CGPoint]) {
+        // Draw center line
+        let centerLine = SKShapeNode()
+        let bezierPath = CGMutablePath()
 
-        // Left wall
-        let leftWall = SKShapeNode(rectOf: CGSize(width: wallWidth, height: trackHeight))
-        leftWall.position = CGPoint(x: -trackWidth / 2, y: trackHeight / 2)
-        leftWall.fillColor = glowColor
-        leftWall.strokeColor = .clear
-        leftWall.glowWidth = 30  // Glow effect
-        leftWall.zPosition = 5
-        trackNode.addChild(leftWall)
+        if let first = path.first {
+            bezierPath.move(to: first)
+            for point in path.dropFirst() {
+                bezierPath.addLine(to: point)
+            }
+        }
 
-        // Right wall
-        let rightWall = SKShapeNode(rectOf: CGSize(width: wallWidth, height: trackHeight))
-        rightWall.position = CGPoint(x: trackWidth / 2, y: trackHeight / 2)
-        rightWall.fillColor = glowColor
-        rightWall.strokeColor = .clear
-        rightWall.glowWidth = 30
-        rightWall.zPosition = 5
-        trackNode.addChild(rightWall)
-    }
+        centerLine.path = bezierPath
+        centerLine.strokeColor = SKColor(red: 0.15, green: 0.7, blue: 1.0, alpha: 0.4)
+        centerLine.lineWidth = 3
+        centerLine.zPosition = 6
+        trackNode.addChild(centerLine)
 
-    private func createTrackBackground() {
-        // Grid lines for visual feedback
-        let gridSpacing: CGFloat = 200
-        let lineColor = SKColor(red: 0.1, green: 0.4, blue: 0.6, alpha: 0.3)
+        // Draw track boundaries (left and right edges)
+        let trackWidthRadius: CGFloat = 300
 
-        for i in stride(from: CGFloat(0), through: trackHeight, by: gridSpacing) {
-            let line = SKShapeNode(rectOf: CGSize(width: trackWidth, height: 2))
-            line.position = CGPoint(x: 0, y: i)
-            line.fillColor = lineColor
-            line.strokeColor = .clear
-            line.zPosition = 1
-            trackNode.addChild(line)
+        for i in 0..<path.count {
+            let point = path[i]
+
+            // Calculate perpendicular direction for track width
+            let nextIndex = min(i + 1, path.count - 1)
+            let nextPoint = path[nextIndex]
+
+            let dx = nextPoint.x - point.x
+            let dy = nextPoint.y - point.y
+            let length = sqrt(dx * dx + dy * dy)
+
+            if length > 0 {
+                // Perpendicular vector
+                let perpX = -dy / length * trackWidthRadius
+                let perpY = dx / length * trackWidthRadius
+
+                // Left edge
+                let leftEdge = SKShapeNode(circleOfRadius: 8)
+                leftEdge.position = CGPoint(x: point.x + perpX, y: point.y + perpY)
+                leftEdge.fillColor = SKColor(red: 0.2, green: 0.8, blue: 1.0, alpha: 0.5)
+                leftEdge.strokeColor = .clear
+                leftEdge.glowWidth = 8
+                leftEdge.zPosition = 5
+                trackNode.addChild(leftEdge)
+
+                // Right edge
+                let rightEdge = SKShapeNode(circleOfRadius: 8)
+                rightEdge.position = CGPoint(x: point.x - perpX, y: point.y - perpY)
+                rightEdge.fillColor = SKColor(red: 0.2, green: 0.8, blue: 1.0, alpha: 0.5)
+                rightEdge.strokeColor = .clear
+                rightEdge.glowWidth = 8
+                rightEdge.zPosition = 5
+                trackNode.addChild(rightEdge)
+            }
         }
     }
 
     private func setupCheckpoints() {
-        // Create evenly-spaced checkpoints
-        let spacing = trackHeight / CGFloat(numCheckpoints + 1)
+        // Space checkpoints ~30 seconds apart
+        // At 200 points/sec, 30s = 6000 points
+        let averageSpeed: CGFloat = 200
+        let checkpointInterval: CGFloat = 30  // seconds
+        let distanceBetweenCheckpoints = averageSpeed * checkpointInterval
 
         for i in 0..<numCheckpoints {
-            let yPos = spacing * CGFloat(i + 1)
+            // Calculate position along track
+            let targetDistance = distanceBetweenCheckpoints * CGFloat(i + 1)
+            let ratio = targetDistance / trackHeight
+            let pathIndex = min(Int(ratio * CGFloat(gameState.trackPath.count)), gameState.trackPath.count - 1)
+
+            let checkpointPos = gameState.trackPath[pathIndex]
+
             let checkpoint = Checkpoint(
                 id: i,
-                yPosition: yPos,
-                width: trackWidth
+                position: checkpointPos,
+                width: 400
             )
             gameState.checkpoints.append(checkpoint)
 
-            // Visual representation
-            createCheckpointNode(checkpoint: checkpoint)
+            // Visual marker
+            let marker = SKShapeNode(circleOfRadius: 60)
+            marker.position = checkpointPos
+            marker.fillColor = SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 0.3)
+            marker.strokeColor = SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 1.0)
+            marker.lineWidth = 5
+            marker.glowWidth = 25
+            marker.zPosition = 15
+            marker.name = "checkpoint_\(i)"
+            checkpointsNode.addChild(marker)
+
+            // Label
+            let label = SKLabelNode(text: "CP\(i + 1)")
+            label.fontSize = 28
+            label.fontColor = .white
+            label.position = checkpointPos
+            label.zPosition = 16
+            checkpointsNode.addChild(label)
         }
     }
 
-    private func createCheckpointNode(checkpoint: Checkpoint) {
-        let checkpointLine = SKShapeNode(rectOf: CGSize(width: checkpoint.width, height: 5))
-        checkpointLine.position = CGPoint(x: 0, y: checkpoint.yPosition)
-        checkpointLine.fillColor = SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 0.6)
-        checkpointLine.strokeColor = .clear
-        checkpointLine.glowWidth = 15
-        checkpointLine.zPosition = 10
-        checkpointLine.name = "checkpoint_\(checkpoint.id)"
-        checkpointsNode.addChild(checkpointLine)
-
-        // Label
-        let label = SKLabelNode(text: "CHECKPOINT \(checkpoint.id + 1)")
-        label.fontSize = 24
-        label.fontColor = .white
-        label.position = CGPoint(x: 0, y: checkpoint.yPosition + 30)
-        label.zPosition = 11
-        checkpointsNode.addChild(label)
-    }
-
     private func setupRacers() {
-        // Initialize racers at starting positions
-        let startY: CGFloat = 100
-        let spacing: CGFloat = trackWidth / CGFloat(gameState.players.count + 1)
+        // Initialize racers with track path
+        gameState.initializeRacers(trackPath: gameState.trackPath)
 
-        gameState.initializeRacers(startY: startY, spacing: spacing)
-
-        // Create sprite nodes
+        // Create sprite nodes with COLORS
         for racer in gameState.racers {
             createRacerNode(racer: racer)
         }
@@ -213,54 +258,38 @@ class RaceGameScene: SKScene {
         racerNode.position = racer.position
         racerNode.zPosition = 20
 
-        // Sperm body (will be replaced with proper sprite + face photo)
-        let body = createSpermShape()
+        // Get player color
+        let color = playerColor(playerNumber: racer.player.playerNumber)
+
+        // Sperm body with COLOR
+        let body = createSpermShape(color: color)
         racerNode.addChild(body)
 
         // Player number label
-        let numberLabel = SKLabelNode(text: "\(racer.player.playerNumber)")
-        numberLabel.fontSize = 20
+        let numberLabel = SKLabelNode(text: "P\(racer.player.playerNumber)")
+        numberLabel.fontSize = 16
         numberLabel.fontColor = .white
-        numberLabel.position = CGPoint(x: 0, y: -40)
+        numberLabel.position = CGPoint(x: 0, y: -35)
         numberLabel.name = "number"
         racerNode.addChild(numberLabel)
 
-        // Particle trail
-        let trail = createParticleTrail(color: playerColor(playerNumber: racer.player.playerNumber))
+        // Particle trail with player color
+        let trail = createParticleTrail(color: color)
         racerNode.addChild(trail)
 
         racersNode.addChild(racerNode)
     }
 
-    private func createSpermShape() -> SKShapeNode {
-        // Simple sperm shape (head + tail)
-        let head = SKShapeNode(circleOfRadius: 20)
-        head.fillColor = .white
-        head.strokeColor = SKColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 1.0)
-        head.lineWidth = 3
-        head.glowWidth = 10
+    private func createSpermShape(color: SKColor) -> SKShapeNode {
+        // Head with player color
+        let head = SKShapeNode(circleOfRadius: 25)
+        head.fillColor = color
+        head.strokeColor = color.withAlphaComponent(0.8)
+        head.lineWidth = 4
+        head.glowWidth = 15
         head.name = "head"
 
-        // Tail (bezier curve)
-        let tailPath = CGMutablePath()
-        tailPath.move(to: CGPoint(x: 0, y: -20))
-        tailPath.addCurve(
-            to: CGPoint(x: 0, y: -60),
-            control1: CGPoint(x: -10, y: -35),
-            control2: CGPoint(x: 10, y: -45)
-        )
-
-        let tail = SKShapeNode(path: tailPath)
-        tail.strokeColor = SKColor(red: 0.6, green: 0.9, blue: 1.0, alpha: 0.8)
-        tail.lineWidth = 5
-        tail.glowWidth = 5
-        tail.name = "tail"
-
-        let container = SKNode()
-        container.addChild(head)
-        container.addChild(tail)
-
-        return head  // Return head as main shape (simplification for now)
+        return head
     }
 
     private func createParticleTrail(color: SKColor) -> SKEmitterNode {
@@ -287,14 +316,14 @@ class RaceGameScene: SKScene {
 
     private func playerColor(playerNumber: Int) -> SKColor {
         let colors: [SKColor] = [
-            SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0),  // Red
-            SKColor(red: 0.2, green: 0.6, blue: 1.0, alpha: 1.0),  // Blue
-            SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0),  // Green
-            SKColor(red: 1.0, green: 0.8, blue: 0.2, alpha: 1.0),  // Yellow
-            SKColor(red: 1.0, green: 0.4, blue: 0.8, alpha: 1.0),  // Pink
-            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // Purple
-            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // Orange
-            SKColor(red: 0.2, green: 1.0, blue: 0.8, alpha: 1.0),  // Cyan
+            SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0),  // 1: Red
+            SKColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0),  // 2: Yellow
+            SKColor(red: 0.2, green: 0.4, blue: 1.0, alpha: 1.0),  // 3: Blue
+            SKColor(red: 0.2, green: 1.0, blue: 0.2, alpha: 1.0),  // 4: Green
+            SKColor(red: 0.2, green: 0.9, blue: 0.9, alpha: 1.0),  // 5: Cyan
+            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // 6: Orange
+            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // 7: Purple
+            SKColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 1.0),  // 8: Brown
         ]
         return colors[(playerNumber - 1) % colors.count]
     }
@@ -320,15 +349,6 @@ class RaceGameScene: SKScene {
         // Will populate with player positions during update
     }
 
-    private func setupFluidField() {
-        fluidField = FluidField()
-
-        // Tune fluid parameters based on VISEM statistics
-        if let globalStats = TrackletLoader.shared.data?.globalStatistics {
-            fluidField.flowIntensity = CGFloat(globalStats.meanSpeed) * 100.0
-            fluidField.viscosity = 0.2  // Moderate resistance
-        }
-    }
 
     // MARK: - Update Loop
 
@@ -344,12 +364,8 @@ class RaceGameScene: SKScene {
 
         // Update based on game phase
         switch gameState.phase {
-        case .lobby, .registration, .photoCapture:
+        case .lobby:
             // No physics updates
-            break
-
-        case .raceCountdown:
-            // Could add countdown animation
             break
 
         case .racing:
@@ -368,13 +384,10 @@ class RaceGameScene: SKScene {
     }
 
     private func updateRacing(deltaTime: TimeInterval) {
-        // Update fluid field
-        fluidField.update(deltaTime: deltaTime)
-
         // Update each racer
         for racer in gameState.activeRacers() {
-            // Update racer physics
-            racer.update(deltaTime: deltaTime, fluidField: fluidField, weights: physicsWeights)
+            // Update racer physics with track path
+            racer.update(deltaTime: deltaTime, trackPath: gameState.trackPath, weights: physicsWeights)
 
             // Update sprite node
             if let racerNode = racersNode.childNode(withName: "racer_\(racer.player.id)") {
@@ -479,35 +492,8 @@ class RaceGameScene: SKScene {
         guard gameState != nil else { return }
         gameState.phase = .racing
         gameState.raceStartTime = Date().timeIntervalSince1970
-        print("🏁 Race started!")
-
-        // Show countdown
-        showCountdown()
-    }
-
-    private func showCountdown() {
-        let countdownLabel = SKLabelNode(text: "3")
-        countdownLabel.fontSize = 120
-        countdownLabel.fontColor = .white
-        countdownLabel.position = CGPoint(x: 0, y: 0)
-        countdownLabel.zPosition = 200
-        gameCamera.addChild(countdownLabel)
-
-        let countdown = SKAction.sequence([
-            SKAction.run { countdownLabel.text = "3" },
-            SKAction.wait(forDuration: 1.0),
-            SKAction.run { countdownLabel.text = "2" },
-            SKAction.wait(forDuration: 1.0),
-            SKAction.run { countdownLabel.text = "1" },
-            SKAction.wait(forDuration: 1.0),
-            SKAction.run { countdownLabel.text = "GO!" },
-            SKAction.scale(to: 2.0, duration: 0.3),
-            SKAction.wait(forDuration: 0.5),
-            SKAction.fadeOut(withDuration: 0.2),
-            SKAction.removeFromParent()
-        ])
-
-        countdownLabel.run(countdown)
+        print("🏁 RACE STARTED! GO GO GO!")
+        // No countdown - just start!
     }
 
     // MARK: - Multiplayer Integration

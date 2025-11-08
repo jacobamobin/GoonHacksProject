@@ -14,6 +14,7 @@ import Combine
 
 protocol MotionControllerDelegate: AnyObject {
     func didReceiveSteering(x: Double, y: Double)
+    func didReceiveSpeed(_ speed: Double)  // Stroking speed
     func didDetectBoost()
     func didDetectShake()  // For player registration
 }
@@ -32,7 +33,9 @@ class AirPodsMotionController {
 
     // Shake detection
     private var previousAcceleration: CMAcceleration?
-    private let shakeThreshold: Double = 2.0  // Lowered for easier detection
+    private let shakeThreshold: Double = 1.2  // Lowered for easier detection (shaking AirPods in hand)
+    private var lastShakeTime: Date = Date()
+    private let shakeDebounceInterval: TimeInterval = 0.5  // Prevent multiple detections
 
     // Boost detection (quick forward tilt)
     private let boostThreshold: Double = 1.5
@@ -85,6 +88,7 @@ class AirPodsMotionController {
     private func processMotion(_ motion: CMDeviceMotion) {
         let attitude = motion.attitude
         let acceleration = motion.userAcceleration
+        let rotationRate = motion.rotationRate
 
         // 1. Check for shake (for registration)
         detectShake(acceleration: acceleration)
@@ -92,8 +96,33 @@ class AirPodsMotionController {
         // 2. Check for boost gesture (quick forward acceleration)
         detectBoost(acceleration: acceleration)
 
-        // 3. Process steering from attitude (tilt)
+        // 3. Detect stroking speed (up/down motion)
+        detectStrokingSpeed(acceleration: acceleration)
+
+        // 4. Process steering from attitude (tilt)
         processSteering(attitude: attitude)
+    }
+
+    private var strokingVelocity: Double = 0.5  // Current speed from stroking
+    private var lastStrokeUpdate: Date = Date()
+
+    private func detectStrokingSpeed(acceleration: CMAcceleration) {
+        // Y-axis acceleration = up/down motion (stroking)
+        let yAccel = abs(acceleration.y)
+
+        // Map acceleration magnitude to speed (0.3 to 1.0)
+        // Higher magnitude = faster stroking = higher speed
+        let speedFromAccel = min(1.0, 0.3 + (yAccel / 2.0))
+
+        // Smooth the velocity with exponential moving average
+        strokingVelocity = strokingVelocity * 0.9 + speedFromAccel * 0.1
+
+        // Send speed update periodically (every 0.1s)
+        let now = Date()
+        if now.timeIntervalSince(lastStrokeUpdate) >= 0.1 {
+            delegate?.didReceiveSpeed(strokingVelocity)
+            lastStrokeUpdate = now
+        }
     }
 
     private func detectShake(acceleration: CMAcceleration) {
@@ -104,8 +133,21 @@ class AirPodsMotionController {
             acceleration.z * acceleration.z
         )
 
+        // Debounce: prevent multiple rapid detections
+        let now = Date()
+        guard now.timeIntervalSince(lastShakeTime) >= shakeDebounceInterval else {
+            return
+        }
+
+        // Debug: log acceleration values periodically
+        if Int.random(in: 0..<60) == 0 {  // Log ~1% of the time to avoid spam
+            print("📊 Motion: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z)), mag=\(String(format: "%.2f", magnitude))")
+        }
+
         if magnitude > shakeThreshold {
-            print("📳 SHAKE DETECTED! Magnitude: \(magnitude)")
+            lastShakeTime = now
+            print("📳 SHAKE DETECTED! Magnitude: \(String(format: "%.2f", magnitude)) (threshold: \(shakeThreshold))")
+            print("   Acceleration: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z))")
             delegate?.didDetectShake()
         }
 
@@ -125,35 +167,32 @@ class AirPodsMotionController {
     }
 
     private func processSteering(attitude: CMAttitude) {
-        // Map pitch and roll to steering
-        // Roll (left/right tilt) -> X steering
-        // Pitch (forward/back tilt) -> Y steering
+        // STROKING MOTION: Up/down movement = speed
+        // Left/right tilt = steering
 
-        let roll = attitude.roll    // -π to π
-        let pitch = attitude.pitch  // -π to π
+        let roll = attitude.roll    // -π to π (left/right tilt)
+        let pitch = attitude.pitch  // -π to π (forward/back tilt)
 
-        // Normalize to [-1, 1] with deadzone
-        let deadzone = 0.15  // Slightly larger deadzone
+        // Lateral steering from roll
+        let deadzone = 0.15
         var steerX = roll / (.pi / 2)  // Normalize to ±1
-        var steerY = pitch / (.pi / 4)  // Normalize to ±1
 
         // Apply deadzone
         if abs(steerX) < deadzone { steerX = 0 }
-        if abs(steerY) < deadzone { steerY = 0 }
 
         // Clamp
         steerX = max(-1, min(1, steerX))
-        steerY = max(-1, min(1, steerY))
 
-        // Only send if non-zero (reduce spam)
-        if steerX != 0 || steerY != 0 {
-            delegate?.didReceiveSteering(x: steerX, y: steerY)
+        // Send steering
+        if steerX != 0 {
+            delegate?.didReceiveSteering(x: steerX, y: 0)  // Only X steering
         }
     }
 }
 
 // MARK: - iPhone Motion Controller
 
+#if !os(macOS)
 class iPhoneMotionController {
     weak var delegate: MotionControllerDelegate?
 
@@ -256,6 +295,24 @@ class iPhoneMotionController {
         delegate?.didReceiveSteering(x: steerX, y: steerY)
     }
 }
+#else
+// macOS stub - CMMotionManager not available on macOS
+class iPhoneMotionController {
+    weak var delegate: MotionControllerDelegate?
+    
+    var isAvailable: Bool { return false }
+    
+    func start() {
+        print("⚠️ iPhone motion controller not available on macOS")
+        print("   - Use AirPods Pro/Max for motion control on macOS")
+        print("   - Or use keyboard controls (A/D for steering, W for boost)")
+    }
+    
+    func stop() {
+        // No-op
+    }
+}
+#endif
 
 // MARK: - Motion Controller Facade
 
@@ -325,6 +382,18 @@ class MotionController: MotionControllerDelegate {
                 )
             )
             lastNetworkUpdate = now
+        }
+    }
+
+    func didReceiveSpeed(_ speed: Double) {
+        guard let player = player else { return }
+
+        // Update player speed from stroking motion
+        player.updateSpeed(speed)
+
+        // Optionally log for debugging
+        if Int.random(in: 0..<100) == 0 {  // 1% of the time
+            print("🏃 Stroking speed: \(String(format: "%.2f", speed)) for P\(player.playerNumber)")
         }
     }
 

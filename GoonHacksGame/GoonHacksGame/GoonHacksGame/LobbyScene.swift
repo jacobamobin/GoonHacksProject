@@ -32,6 +32,9 @@ class LobbyScene: SKScene {
 
     // AirPods status check timer
     var airPodsCheckTimer: Timer?
+    
+    // Motion controller for shake detection
+    private var shakeDetector: MotionController?
 
     // MARK: - Scene Lifecycle
 
@@ -54,6 +57,8 @@ class LobbyScene: SKScene {
         NotificationCenter.default.removeObserver(self)
         airPodsCheckTimer?.invalidate()
         airPodsCheckTimer = nil
+        shakeDetector?.stop()
+        shakeDetector = nil
     }
 
     // MARK: - Setup
@@ -153,10 +158,21 @@ class LobbyScene: SKScene {
         // Start AirPods monitoring to prevent auto-disconnect
         AirPodsDetector.shared.startMonitoring()
 
+        // Start shake detection for player registration
+        setupShakeDetection()
+
         // Check AirPods status
         checkAirPodsStatus()
 
         updateConnectionStatus()
+    }
+    
+    private func setupShakeDetection() {
+        // Create a motion controller specifically for shake detection in lobby
+        shakeDetector = MotionController()
+        shakeDetector?.start(controlType: .airPods)
+        
+        print("🎧 Shake detection started for player registration")
     }
 
     private func checkAirPodsStatus() {
