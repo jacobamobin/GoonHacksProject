@@ -140,60 +140,34 @@ class GameCoordinator {
     // MARK: - Motion Control Setup
 
     private func setupMotionControllers(for players: [Player]) {
-        // SHARED AIRPODS SUPPORT: Multiple players can use the same AirPods (they move together!)
-        // This allows "co-op" mode where 2 players wear the same AirPods and race as a team
-        var sharedControllers: [String: MotionController] = [:]
-
+        // macOS only - AirPods motion control with left/right split
+        // Create individual MotionController for each player
+        // They all share the same CMHeadphoneMotionManager singleton internally
+        // but use earSide to gate which player responds to motion
+        
         for player in players {
             if case .human(let deviceId) = player.type {
-                // If this is an AirPod device, prefer the centralized
-                // BluetoothControllerManager on platforms where it provides
-                // motion data (iOS). On macOS the Bluetooth manager uses a
-                // stub and does not provide accelerometer updates, so we
-                // create a local MotionController instead to read from
-                // the headphone motion or device motion APIs.
-                #if !os(macOS)
-                if deviceId.hasPrefix("airpod_") {
-                    print("🎮 Using BluetoothControllerManager for \(player.name) (device: \(deviceId))")
-                    continue
+                let controller = MotionController()
+                
+                // Assign ear side - ONLY left/right will respond to AirPods motion
+                if deviceId == "airpod_left" {
+                    controller.earSide = .left
+                } else if deviceId == "airpod_right" {
+                    controller.earSide = .right
                 }
-                #else
-                // On macOS, fall through and create a MotionController for AirPods
-                // so that SPM and stroking speed are available.
-                #endif
 
-                // Check if we already have a controller for this deviceId
-                if let existingController = sharedControllers[deviceId] {
-                    // Share the controller - add this player to the controller's player list
-                    existingController.players.append(player)
-                    motionControllers[player.id] = existingController
-                    print("🎮 Shared motion controller with \(player.name) (co-op mode! Now \(existingController.players.count) players)")
-                } else {
-                    // Create new controller for non-AirPod devices (e.g. networked iOS)
-                    let controller = MotionController()
-                    
-                    // Assign ear side based on deviceId for independent control
-                    if deviceId == "airpod_left" {
-                        controller.earSide = .left
-                    } else if deviceId == "airpod_right" {
-                        controller.earSide = .right
-                    }
+                // CRITICAL: Assign the player so motion updates can find it
+                controller.player = player
+                controller.players = [player]
 
-                    controller.player = player
-                    controller.players = [player]  // Initialize with first player
+                // Always use AirPods control type on macOS
+                controller.start(controlType: .airPods)
 
-                    // Start appropriate motion controller
-                    if let controlType = player.controlType {
-                        controller.start(controlType: controlType)
-                    } else {
-                        controller.start(controlType: .airPods)  // Default
-                    }
+                motionControllers[player.id] = controller
 
-                    motionControllers[player.id] = controller
-                    sharedControllers[deviceId] = controller
-
-                    print("🎮 Motion controller started for \(player.name) (\(player.controlType == .airPods ? "AirPods" : "iPhone"))")
-                }
+                let sideStr = controller.earSide == .left ? " (LEFT)" : controller.earSide == .right ? " (RIGHT)" : ""
+                print("🎮 Motion controller started for \(player.name)\(sideStr) (AirPods)")
+                print("   ✅ Motion will directly update Player object")
             }
         }
     }

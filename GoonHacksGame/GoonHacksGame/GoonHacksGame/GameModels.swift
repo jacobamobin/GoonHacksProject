@@ -16,11 +16,6 @@ enum PlayerType {
     case cpu
 }
 
-enum ControlType {
-    case airPods
-    case iPhone
-}
-
 class Player {
     let id: String
     let playerNumber: Int  // 1-8
@@ -387,53 +382,53 @@ class GameState {
     var checkpoints: [Checkpoint] = []
     var trackPoints: [TrackPoint] = []
     var obstacles: [CGRect] = []
-
+    
     var raceStartTime: TimeInterval? = nil
     var currentTime: TimeInterval = 0
-
+    
     let trackLength: CGFloat = 30000  // MUCH longer track for ~90s total race
     // Increase track width for high-res displays and wider lanes (makes lanes much more spread out)
     let trackWidth: CGFloat = 1400  // Wider track for 4k / mac screens
-
+    
     func addPlayer(_ player: Player) {
         players.append(player)
     }
-
+    
     func initializeRace() {
         // Generate track
         trackPoints = TrackGenerator.generateRacingTrack(length: trackLength, width: trackWidth)
-
+        
         // NO OBSTACLES - removed for cleaner racing!
         obstacles = []
-
+        
         // Create racers at starting line - SEPARATE LANES so they don't overlap!
         let startY: CGFloat = 100
         let startTrackPoint = trackPoints.first ?? TrackPoint(position: .zero, width: trackWidth)
-
-    // Assign each racer to a lane (horizontal offset)
-    // Use consistent lane width based on the track width so lane dividers and racers line up.
-    let lanes = max(players.count, 8)
-    let laneWidth: CGFloat = trackWidth / CGFloat(lanes)
-    let totalLaneWidth = CGFloat(lanes - 1) * laneWidth
-    let startLaneOffset = -totalLaneWidth / 2
-
+        
+        // Assign each racer to a lane (horizontal offset)
+        // Use consistent lane width based on the track width so lane dividers and racers line up.
+        let lanes = max(players.count, 8)
+        let laneWidth: CGFloat = trackWidth / CGFloat(lanes)
+        let totalLaneWidth = CGFloat(lanes - 1) * laneWidth
+        let startLaneOffset = -totalLaneWidth / 2
+        
         for (index, player) in players.enumerated() {
             // Each racer gets their own lane offset from center
             let laneOffset = startLaneOffset + CGFloat(index) * laneWidth
-
+            
             // Start at track centerline + lane offset
             let startPos = CGPoint(
                 x: startTrackPoint.position.x + laneOffset,
                 y: startY
             )
-
+            
             let racer = Racer(player: player, startPosition: startPos, laneOffset: laneOffset)
             racers.append(racer)
-
+            
             print("🏁 P\(player.playerNumber) assigned lane \(index + 1) (offset: \(Int(laneOffset)))")
         }
-
-    // Checkpoints ~30 SECONDS APART (baseSpeed 300 * 30s = 9000 units)
+        
+        // Checkpoints ~30 SECONDS APART (baseSpeed 300 * 30s = 9000 units)
         // For 30000 length = 3 checkpoints (at ~10k, ~20k, ~30k)
         let checkpointInterval: CGFloat = 10000  // ~30 seconds at base speed
         for i in 0..<2 {
@@ -442,51 +437,52 @@ class GameState {
             let checkpoint = Checkpoint(id: i, position: CGPoint(x: trackPoint.position.x, y: y), width: trackWidth)
             checkpoints.append(checkpoint)
         }
-
+        
         // Finish line at end
         let finishPoint = trackPoints.last!
         checkpoints.append(Checkpoint(id: 2, position: CGPoint(x: finishPoint.position.x, y: trackLength), width: trackWidth))
     }
-
+    
     func activeRacers() -> [Racer] {
         return racers.filter { !$0.player.isEliminated }
     }
-
+    
     func checkCheckpoints() -> [Player]? {
         var eliminated: [Player] = []
-
+        
         for i in 0..<checkpoints.count {
             if checkpoints[i].passed { continue }
-
+            
             let active = activeRacers()
             let racersPastCheckpoint = active.filter { $0.position.y >= checkpoints[i].position.y }
-
+            
             // Trigger elimination when the second to last player crosses the line
             if racersPastCheckpoint.count >= active.count - 1 {
                 checkpoints[i].passed = true
-
+                
                 // Find the player who is furthest behind
                 if let loser = active.min(by: { $0.position.y < $1.position.y }) {
-                // Prevent double-processing of this checkpoint in subsequent frames
-                // by marking it passed (so we only eliminate at most one player here).
-                // This ensures a single elimination per checkpoint crossing event.
-                if let idx = checkpoints.firstIndex(where: { $0.id == checkpoint.id }) {
-                    checkpoints[idx].passed = true
-                }
-
-                // Find last place racers (within epsilon), eliminate only ONE at random
-                let active = activeRacers()
-                guard let minY = active.map({ $0.position.y }).min() else { continue }
-                let epsilon: CGFloat = 20  // consider ties within 20 pts
-                let tiedLast = active.filter { abs($0.position.y - minY) <= epsilon }
-                if let loser = tiedLast.randomElement() {
-                    loser.player.isEliminated = true
-                    eliminated.append(loser.player)
+                    // Prevent double-processing of this checkpoint in subsequent frames
+                    // by marking it passed (so we only eliminate at most one player here).
+                    // This ensures a single elimination per checkpoint crossing event.
+                    if let idx = checkpoints.firstIndex(where: { $0.id == checkpoints[i].id }) {
+                        checkpoints[idx].passed = true
+                    }
+                    
+                    // Find last place racers (within epsilon), eliminate only ONE at random
+                    let active = activeRacers()
+                    guard let minY = active.map({ $0.position.y }).min() else { continue }
+                    let epsilon: CGFloat = 20  // consider ties within 20 pts
+                    let tiedLast = active.filter { abs($0.position.y - minY) <= epsilon }
+                    if let loser = tiedLast.randomElement() {
+                        loser.player.isEliminated = true
+                        eliminated.append(loser.player)
+                    }
                 }
             }
         }
-
+        
         return eliminated.isEmpty ? nil : eliminated
     }
+    
 }
-

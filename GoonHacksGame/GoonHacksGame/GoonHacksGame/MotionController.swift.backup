@@ -132,191 +132,215 @@ class AirPodsMotionController {
     private var wasAboveThreshold = false
     
     private func detectStrokingSpeed(acceleration: CMAcceleration, tiltX: Double) {
+        // Determine if this controller should be active based on tilt direction
+        let active: Bool
+        if let side = earSide {
+            if side == .left {
+                active = tiltX < -0.1
+            } else {
+                active = tiltX > 0.1
+            }
+            
+            // Debug: Log ear-side gating
+            if Int.random(in: 0..<120) == 0 {
+                print("👂 EarSide=\(side), tiltX=\(String(format: "%.2f", tiltX)), active=\(active)")
+            }
+        } else {
+            active = true
+        }
+        
         // STROKING = ANY MOTION (orientation-independent)
-        // No side gating for stroking - both sides can always stroke!
         let totalAccel = sqrt(acceleration.x * acceleration.x + acceleration.y * acceleration.y + acceleration.z * acceleration.z)
         
         // Debug: Log raw acceleration components
         if Int.random(in: 0..<120) == 0 {
             print("📊 RAW ACCEL: x=\(String(format: "%.3f", acceleration.x)), y=\(String(format: "%.3f", acceleration.y)), z=\(String(format: "%.3f", acceleration.z)), total=\(String(format: "%.3f", totalAccel))G")
-        }
-        
-        // Simple smoothing (keep last 5 readings for smoother response)
-        recentAccelerations.append(totalAccel)
-        if recentAccelerations.count > 5 {
-            recentAccelerations.removeFirst()
-        }
-        let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)
-        
-        // PEAK DETECTION for SPM (Strokes Per Minute)
-        let peakThreshold = 0.2  // Lowered from 0.3G - motion above this counts as a stroke
-        let now = Date()
-        
-        // Detect rising edge (crossing threshold)
-        if avgAccel >= peakThreshold && !wasAboveThreshold {
-            // New stroke detected!
-            wasAboveThreshold = true
             
-            // Debounce - ignore peaks within 0.1s of last peak
-            if now.timeIntervalSince(lastPeakTime) > 0.1 {
-                strokeTimestamps.append(now)
-                lastPeakTime = now
+            // Simple smoothing (keep last 5 readings for smoother response)
+            recentAccelerations.append(totalAccel)
+            if recentAccelerations.count > 5 {
+                recentAccelerations.removeFirst()
+            }
+            let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)
+            
+            // If not active, decay toward baseline and send baseline updates so inactive side doesn't mirror the active one
+            if !active {
+                strokingVelocity = max(0.75, strokingVelocity * 0.95)
                 
-                // Keep only last 20 strokes
-                if strokeTimestamps.count > 20 {
-                    strokeTimestamps.removeFirst()
+                // Debug: Log when we're inactive
+                if Int.random(in: 0..<120) == 0 {
+                    print("💤 INACTIVE side \(earSide?.description ?? "unknown") - sending baseline speed 0.75")
                 }
                 
-                // Calculate SPM from recent strokes and send to delegate
+                delegate?.didReceiveSpeed(0.75)
+                delegate?.didReceiveSPM(0)
+                return
+            }
+            
+            // PEAK DETECTION for SPM (Strokes Per Minute)
+            let peakThreshold = 0.2  // Lowered from 0.3G - motion above this counts as a stroke
+            let now = Date()
+            
+            // Detect rising edge (crossing threshold)
+            if avgAccel >= peakThreshold && !wasAboveThreshold {
+                // New stroke detected!
+                wasAboveThreshold = true
+                
+                // Debounce - ignore peaks within 0.1s of last peak
+                if now.timeIntervalSince(lastPeakTime) > 0.1 {
+                    strokeTimestamps.append(now)
+                    lastPeakTime = now
+                    
+                    // Keep only last 20 strokes
+                    if strokeTimestamps.count > 20 {
+                        strokeTimestamps.removeFirst()
+                    }
+                    
+                    // Calculate SPM from recent strokes and send to delegate
+                    if strokeTimestamps.count >= 2 {
+                        let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
+                        if timeWindow > 0 {
+                            let spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
+                            delegate?.didReceiveSPM(spm)
+                        }
+                    }
+                }
+            } else if avgAccel < peakThreshold {
+                wasAboveThreshold = false
+            }
+            
+            // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
+            // No motion = 0.75x, max shaking = 1.3x
+            let rawSpeed: Double
+            if avgAccel < 0.15 {
+                rawSpeed = 0.75
+            } else {
+                let bonus = min(0.55, (avgAccel - 0.15) * 0.85)
+                rawSpeed = 0.75 + bonus
+            }
+            
+            // Very light smoothing for responsiveness
+            strokingVelocity = strokingVelocity * 0.6 + rawSpeed * 0.4
+            
+            // Debug logging (every ~1s)
+            if Int.random(in: 0..<60) == 0 {
+                let spm: Double
                 if strokeTimestamps.count >= 2 {
                     let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
-                    if timeWindow > 0 {
-                        let spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
-                        delegate?.didReceiveSPM(spm)
+                    spm = timeWindow > 0 ? Double(strokeTimestamps.count - 1) / timeWindow * 60.0 : 0
+                } else {
+                    spm = 0
+                }
+                let activeStr = earSide != nil ? " [\(earSide == .left ? "LEFT" : "RIGHT") ACTIVE]" : ""
+                print("🏃 ANY MOTION\(activeStr): total=\(String(format: "%.3f", avgAccel))G → speed=\(String(format: "%.2f", strokingVelocity))x, SPM=\(Int(spm)))")
+            }
+            
+            // Send speed update
+            if Int.random(in: 0..<120) == 0 {
+                print("📤 Sending speed \(String(format: "%.2f", strokingVelocity)) to delegate")
+            }
+            delegate?.didReceiveSpeed(strokingVelocity)
+        }
+        
+        private func detectShake(acceleration: CMAcceleration) {
+            // Calculate total acceleration magnitude
+            let magnitude = sqrt(
+                acceleration.x * acceleration.x +
+                acceleration.y * acceleration.y +
+                acceleration.z * acceleration.z
+            )
+            
+            // Debounce: prevent multiple rapid detections
+            let now = Date()
+            guard now.timeIntervalSince(lastShakeTime) >= shakeDebounceInterval else {
+                return
+            }
+            
+            // Debug: log acceleration values periodically
+            if Int.random(in: 0..<60) == 0 {  // Log ~1% of the time to avoid spam
+                print("📊 Motion: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z)), mag=\(String(format: "%.2f", magnitude))")
+            }
+            
+            if magnitude > shakeThreshold {
+                lastShakeTime = now
+                print("📳 SHAKE DETECTED! Magnitude: \(String(format: "%.2f", magnitude)) (threshold: \(shakeThreshold))")
+                print("   Acceleration: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z))")
+                delegate?.didDetectShake()
+            }
+            
+            previousAcceleration = acceleration
+        }
+        
+        private func detectBoost(acceleration: CMAcceleration, tiltX: Double) {
+            // Gate boost by ear side and tilt direction
+            if let side = earSide {
+                if side == .left && tiltX >= -0.1 { return }
+                if side == .right && tiltX <= 0.1 { return }
+            }
+            // Detect quick forward acceleration (positive Z in headphone space)
+            if acceleration.z > boostThreshold || acceleration.y > boostThreshold {
+                let now = Date()
+                if now.timeIntervalSince(lastBoostTime) > 1.0 {  // 1s cooldown
+                    print("💨 BOOST detected! Z: \(acceleration.z), Y: \(acceleration.y)")
+                    delegate?.didDetectBoost()
+                    lastBoostTime = now
+                }
+            }
+        }
+        
+        private func processSteering(gravity: CMAcceleration) {
+            // STEERING = ONLY TILT ANGLE (not motion/shaking!)
+            // gravity.x shows the tilt: -1 (tilted left) to +1 (tilted right)
+            
+            let rawSteerX = gravity.x
+            
+            // Very small dead zone for responsive steering
+            let deadzone = 0.05  // Reduced from 0.08
+            var steerX: Double
+            
+            if abs(rawSteerX) < deadzone {
+                steerX = 0.0
+            } else {
+                // Strong amplification for responsive steering
+                steerX = rawSteerX * 3.0  // Increased from 2.0
+                steerX = max(-1.0, min(1.0, steerX))  // Clamp to -1...1
+            }
+            
+            // Suppress steering when this side isn't active
+            let wasActive = steerX != 0.0
+            if let side = earSide {
+                let active = (side == .left && rawSteerX < -0.1) || (side == .right && rawSteerX > 0.1)
+                if !active {
+                    steerX = 0.0
+                    if wasActive && Int.random(in: 0..<60) == 0 {
+                        print("🚫 STEERING suppressed for \(side) side (rawSteerX=\(String(format: "%.2f", rawSteerX)))")
                     }
                 }
             }
-        } else if avgAccel < peakThreshold {
-            wasAboveThreshold = false
-        }
-        
-        // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
-        // No motion = 0.75x, max shaking = 1.3x
-        let rawSpeed: Double
-        if avgAccel < 0.15 {
-            rawSpeed = 0.75
-        } else {
-            let bonus = min(0.55, (avgAccel - 0.15) * 0.85)
-            rawSpeed = 0.75 + bonus
-        }
-        
-        // Very light smoothing for responsiveness
-        strokingVelocity = strokingVelocity * 0.6 + rawSpeed * 0.4
-        
-        // Debug logging (every ~1s)
-        if Int.random(in: 0..<60) == 0 {
-            let spm: Double
-            if strokeTimestamps.count >= 2 {
-                let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
-                spm = timeWindow > 0 ? Double(strokeTimestamps.count - 1) / timeWindow * 60.0 : 0
-            } else {
-                spm = 0
-            }
-            let activeStr = earSide != nil ? " [\(earSide == .left ? "LEFT" : "RIGHT")]" : ""
-            print("🏃 ANY MOTION\(activeStr): total=\(String(format: "%.3f", avgAccel))G → speed=\(String(format: "%.2f", strokingVelocity))x, SPM=\(Int(spm)))")
-        }
-        
-        // Send speed update
-        if Int.random(in: 0..<120) == 0 {
-            print("📤 Sending speed \(String(format: "%.2f", strokingVelocity)) to delegate")
-        }
-        delegate?.didReceiveSpeed(strokingVelocity)
-    }
-        
-    private func detectShake(acceleration: CMAcceleration) {
-        // Calculate total acceleration magnitude
-        let magnitude = sqrt(
-            acceleration.x * acceleration.x +
-            acceleration.y * acceleration.y +
-            acceleration.z * acceleration.z
-        )
-        
-        // Debounce: prevent multiple rapid detections
-        let now = Date()
-        guard now.timeIntervalSince(lastShakeTime) >= shakeDebounceInterval else {
-            return
-        }
-        
-        // Debug: log acceleration values periodically
-        if Int.random(in: 0..<60) == 0 {  // Log ~1% of the time to avoid spam
-            print("📊 Motion: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z)), mag=\(String(format: "%.2f", magnitude))")
-        }
-        
-        if magnitude > shakeThreshold {
-            lastShakeTime = now
-            print("📳 SHAKE DETECTED! Magnitude: \(String(format: "%.2f", magnitude)) (threshold: \(shakeThreshold))")
-            print("   Acceleration: x=\(String(format: "%.2f", acceleration.x)), y=\(String(format: "%.2f", acceleration.y)), z=\(String(format: "%.2f", acceleration.z))")
             
-            // Post notification for lobby scene to register players
-            NotificationCenter.default.post(name: .deviceShakeDetected, object: nil)
-            
-            // Also call delegate (for in-race shake handling)
-            delegate?.didDetectShake()
-        }
-        
-        previousAcceleration = acceleration
-    }
-    
-    private func detectBoost(acceleration: CMAcceleration, tiltX: Double) {
-        // Gate boost by ear side and tilt direction
-        if let side = earSide {
-            if side == .left && tiltX >= -0.1 { return }
-            if side == .right && tiltX <= 0.1 { return }
-        }
-        // Detect quick forward acceleration (positive Z in headphone space)
-        if acceleration.z > boostThreshold || acceleration.y > boostThreshold {
-            let now = Date()
-            if now.timeIntervalSince(lastBoostTime) > 1.0 {  // 1s cooldown
-                print("💨 BOOST detected! Z: \(acceleration.z), Y: \(acceleration.y)")
-                delegate?.didDetectBoost()
-                lastBoostTime = now
+            // Debug logging (every 30 frames = ~0.5 seconds)
+            if Int.random(in: 0..<30) == 0 {
+                let activeStr = earSide != nil ? " [\(earSide == .left ? "LEFT" : "RIGHT")]" : ""
+                print("🎮 TILT STEERING\(activeStr): gravity.x=\(String(format: "%.2f", rawSteerX)) → steer=\(String(format: "%.2f", steerX))")
             }
+            
+            // Always send steering
+            if Int.random(in: 0..<120) == 0 {
+                print("📤 Sending steering x=\(String(format: "%.2f", steerX)) to delegate")
+            }
+            delegate?.didReceiveSteering(x: steerX, y: 0)
         }
     }
     
-    private func processSteering(gravity: CMAcceleration) {
-        // STEERING = ONLY TILT ANGLE (not motion/shaking!)
-        // gravity.x shows the tilt: -1 (tilted left) to +1 (tilted right)
-        
-        let rawSteerX = gravity.x
-        
-        // Very small dead zone for responsive steering
-        let deadzone = 0.05  // Reduced from 0.08
-        var steerX: Double
-        
-        if abs(rawSteerX) < deadzone {
-            steerX = 0.0
-        } else {
-            // Strong amplification for responsive steering
-            steerX = rawSteerX * 3.0  // Increased from 2.0
-            steerX = max(-1.0, min(1.0, steerX))  // Clamp to -1...1
-        }
-        
-        // Suppress steering when this side isn't active
-        let wasActive = steerX != 0.0
-        if let side = earSide {
-            let active = (side == .left && rawSteerX < -0.1) || (side == .right && rawSteerX > 0.1)
-            if !active {
-                steerX = 0.0
-                if wasActive && Int.random(in: 0..<60) == 0 {
-                    print("🚫 STEERING suppressed for \(side) side (rawSteerX=\(String(format: "%.2f", rawSteerX)))")
-                }
-            }
-        }
-        
-        // Debug logging (every 30 frames = ~0.5 seconds)
-        if Int.random(in: 0..<30) == 0 {
-            let activeStr = earSide != nil ? " [\(earSide == .left ? "LEFT" : "RIGHT")]" : ""
-            print("🎮 TILT STEERING\(activeStr): gravity.x=\(String(format: "%.2f", rawSteerX)) → steer=\(String(format: "%.2f", steerX))")
-        }
-        
-        // Always send steering
-        if Int.random(in: 0..<120) == 0 {
-            print("📤 Sending steering x=\(String(format: "%.2f", steerX)) to delegate")
-        }
-        delegate?.didReceiveSteering(x: steerX, y: 0)
+    // MARK: - Notifications
+    
+    extension Notification.Name {
+        static let deviceShakeDetected = Notification.Name("deviceShakeDetected")
     }
-    }
-
-// MARK: - Notifications
-
-extension Notification.Name {
-    static let deviceShakeDetected = Notification.Name("deviceShakeDetected")
-}
-
-// MARK: - AirPods Detection Helper
-
-class AirPodsDetector {
+    
+    // MARK: - AirPods Detection Helper
+    
+    class AirPodsDetector {
         static let shared = AirPodsDetector()
         
         private init() {}
@@ -352,6 +376,7 @@ class AirPodsDetector {
             }
         }
     }
+}
 
 // MARK: - Control Type Enum
 
@@ -363,7 +388,6 @@ public enum ControlType {
 
 public class MotionController {
     private var airPodsController: AirPodsMotionController?
-    private var delegateForwarder: MotionDelegateForwarder?  // Strong reference to keep it alive
     
     var earSide: EarSide? {
         get {
@@ -392,9 +416,7 @@ public class MotionController {
                 airPodsController = AirPodsMotionController()
             }
             // Set up a forwarding delegate that includes player info
-            // IMPORTANT: Store strong reference to prevent deallocation
-            delegateForwarder = MotionDelegateForwarder(motionController: self)
-            airPodsController?.delegate = delegateForwarder
+            airPodsController?.delegate = MotionDelegateForwarder(motionController: self)
             airPodsController?.start()
         }
     }
@@ -428,16 +450,13 @@ private class MotionDelegateForwarder: MotionControllerDelegate {
     }
     
     func didReceiveSpeed(_ speed: Double) {
-        guard let motionController = motionController, let player = motionController.player else {
-            print("⚠️ didReceiveSpeed called but player is nil! speed=\(String(format: "%.2f", speed))")
-            return
-        }
+        guard let motionController = motionController, let player = motionController.player else { return }
         
         // Update player directly
         player.speedInput = CGFloat(speed)
         
         if Int.random(in: 0..<120) == 0 {
-            print("🏃 Player \(player.playerNumber) (\(player.name)) speed updated: \(String(format: "%.2f", speed))x → speedInput now \(String(format: "%.2f", player.speedInput))")
+            print("🏃 Player \(player.playerNumber) (\(player.name)) speed updated: \(String(format: "%.2f", speed))x")
         }
     }
     
@@ -456,13 +475,11 @@ private class MotionDelegateForwarder: MotionControllerDelegate {
         guard let motionController = motionController, let player = motionController.player else { return }
         
         // Apply boost to player
-        player.boostActive = true
-        player.lastBoostTime = Date().timeIntervalSinceReferenceDate
+        player.boostTimeRemaining = 2.0  // 2 second boost
         print("💨 Player \(player.playerNumber) (\(player.name)) BOOST activated!")
     }
     
     func didDetectShake() {
-        // Shakes are now handled by notification posted from AirPodsMotionController
-        // This method can be used for future in-race shake handling if needed
+        // Ignore shakes during race
     }
 }

@@ -10,6 +10,7 @@ import Foundation
 import CoreMotion
 import CoreBluetooth
 import Combine
+import GoonHacksGame
 
 // MARK: - Controller Device
 
@@ -119,11 +120,101 @@ class BluetoothControllerManager: NSObject, ObservableObject {
 
     // MARK: - Headphone / Accelerometer setup
 
-    // We use accelerometer/device motion on iOS. On macOS a stub is used.
+    // We use CMHeadphoneMotionManager on macOS for AirPods, accelerometer on iOS
     @available(iOS 14.0, *)
     private func connectToAvailableHeadphones() {
         #if os(macOS)
-        print("⚠️ Motion control not available on macOS")
+        // On macOS, use CMHeadphoneMotionManager for AirPods with left/right split
+        if #available(macOS 11.0, *) {
+            let headphoneManager = CMHeadphoneMotionManager()
+            
+            guard headphoneManager.isDeviceMotionAvailable else {
+                print("⚠️ AirPods motion not available - connect AirPods Pro/Max")
+                return
+            }
+            
+            // Create left and right virtual devices
+            if devices.first(where: { $0.id == "airpod_left" }) == nil {
+                devices.append(ControllerDevice(id: "airpod_left", name: "AirPod L"))
+            }
+            if devices.first(where: { $0.id == "airpod_right" }) == nil {
+                devices.append(ControllerDevice(id: "airpod_right", name: "AirPod R"))
+            }
+            
+            // Keep AirPods connected even when removed from ears
+            // Start a dummy update loop first to maintain connection
+            headphoneManager.startDeviceMotionUpdates()
+            
+            // Small delay to establish connection, then start real updates
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self = self else { return }
+                
+                headphoneManager.stopDeviceMotionUpdates()
+                
+                // Start headphone motion updates with handler
+                headphoneManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
+                    guard let self = self, let motion = motion else { return }
+                    
+                    let gravity = motion.gravity
+                    let acceleration = motion.userAcceleration
+                    
+                    // Use tilt to determine which player, but BOTH can be active simultaneously!
+                    // Negative tilt = left, positive tilt = right
+                    let tilt = gravity.x
+                    
+                    // Calculate TOTAL motion magnitude (orientation-agnostic)
+                    let magnitude = sqrt(acceleration.x * acceleration.x +
+                                       acceleration.y * acceleration.y +
+                                       acceleration.z * acceleration.z)
+                    
+                    // DUAL CONTROL: Both players can move at the same time!
+                    // Each player gets the motion when their corresponding AirPod is being shaken
+                    // We use a simple rule: if shaking hard, it goes to the tilted side
+                    
+                    // For LEFT player: apply motion when tilted left OR when motion is strong
+                    let leftMotion = (tilt < 0 || magnitude > 0.5) ? magnitude : 0.0
+                    self.leftRecentAccels.append(leftMotion)
+                    if self.leftRecentAccels.count > 6 { self.leftRecentAccels.removeFirst() }
+                    
+                    // For RIGHT player: apply motion when tilted right OR when motion is strong
+                    let rightMotion = (tilt >= 0 || magnitude > 0.5) ? magnitude : 0.0
+                    self.rightRecentAccels.append(rightMotion)
+                    if self.rightRecentAccels.count > 6 { self.rightRecentAccels.removeFirst() }
+                    
+                    let leftAvg = self.leftRecentAccels.reduce(0, +) / Double(max(1, self.leftRecentAccels.count))
+                    let rightAvg = self.rightRecentAccels.reduce(0, +) / Double(max(1, self.rightRecentAccels.count))
+                    
+                    // Calculate speeds - BOTH can be high simultaneously
+                    let leftRawSpeed: Double = leftAvg < 0.05 ? 0.75 : min(1.3, 0.75 + min(0.55, (leftAvg - 0.05) * 1.5))
+                    self.leftSmoothedSpeed = self.leftSmoothedSpeed * 0.3 + leftRawSpeed * 0.7
+                    
+                    let rightRawSpeed: Double = rightAvg < 0.05 ? 0.75 : min(1.3, 0.75 + min(0.55, (rightAvg - 0.05) * 1.5))
+                    self.rightSmoothedSpeed = self.rightSmoothedSpeed * 0.3 + rightRawSpeed * 0.7
+                    
+                    // Send updates to BOTH players always
+                    if let left = self.devices.first(where: { $0.id == "airpod_left" }) {
+                        if leftAvg > 0.1 && Int.random(in: 0..<30) == 0 {
+                            print("📤 LEFT: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), mag=\(String(format: "%.2f", leftAvg))")
+                        }
+                        self.delegate?.didReceiveMotion(from: left.id, strokingSpeed: self.leftSmoothedSpeed, steering: tilt, spm: 0)
+                    }
+                    
+                    if let right = self.devices.first(where: { $0.id == "airpod_right" }) {
+                        if rightAvg > 0.1 && Int.random(in: 0..<30) == 0 {
+                            print("📤 RIGHT: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), mag=\(String(format: "%.2f", rightAvg))")
+                        }
+                        self.delegate?.didReceiveMotion(from: right.id, strokingSpeed: self.rightSmoothedSpeed, steering: tilt, spm: 0)
+                    }
+                }
+            }
+            
+            print("✅ AirPods motion started - KEEP AIRPODS CONNECTED!")
+            print("   Person 1: Hold LEFT AirPod and shake")
+            print("   Person 2: Hold RIGHT AirPod and shake")
+            print("   Both can play simultaneously!")
+        } else {
+            print("⚠️ AirPods motion requires macOS 11.0+")
+        }
         return
         #else
         // Check accelerometer availability on iOS devices
@@ -154,9 +245,10 @@ class BluetoothControllerManager: NSObject, ObservableObject {
             // Steering from X axis tilt (-1..1)
             let tilt = max(-1.0, min(1.0, data.acceleration.x * 3.0))
 
-            // Attribute motion to left or right based on tilt sign to avoid shared SPM
-            // Dynamic threshold: maintain a rolling noise window to adapt to device/environment
-            // This reduces false positives in noisy environments while staying sensitive to real strokes.
+            // INDEPENDENT LEFT/RIGHT CONTROL:
+            // - When tilting LEFT (tilt < -0.2): only left player gets motion
+            // - When tilting RIGHT (tilt > 0.2): only right player gets motion  
+            // - In neutral position (-0.2 to 0.2): both get reduced motion
             let peakThresholdBase = 0.12
             let now = Date()
 
@@ -164,26 +256,39 @@ class BluetoothControllerManager: NSObject, ObservableObject {
             var rightSPM: Double = 0.0
 
             // Orientation-agnostic detection: compute a robust signal from magnitude changes + gravity-subtracted baseline
-            // Use both the change in magnitude (jerk) and the magnitude above 1g as the stroke signal so any orientation counts.
             let accelDelta = abs(magnitude - self.lastAccelMagnitude)
             self.lastAccelMagnitude = magnitude
             let gravityBaseline = max(0.0, magnitude - 1.0) // remove static gravity
             // Combine signals - emphasize sudden changes but allow sustained high accel too
             let signal = max(gravityBaseline, accelDelta * 2.0)
 
-            // Compute per-side weights from tilt so strokes bias to left/right but do NOT gate detection
-            // tilt range ~ -1 (left) ... 1 (right). We map to leftWeight in [0.15, 0.85]
-            let rawLeftWeight = 0.5 - (tilt * 0.4)
-            let leftWeight = max(0.15, min(0.85, rawLeftWeight))
-            let rightWeight = 1.0 - leftWeight
-
-            // Append weighted signals to both buffers so gentle shaking in any orientation registers
-            self.leftRecentAccels.append(signal * leftWeight)
-            if self.leftRecentAccels.count > 6 { self.leftRecentAccels.removeFirst() }
+            // CLEAR SEPARATION: Use tilt to determine which side is active
+            // This prevents both players from moving when one phone shakes
+            let leftActive = tilt < -0.15   // Tilted left
+            let rightActive = tilt > 0.15   // Tilted right
+            
+            // Apply signal ONLY to the active side
+            if leftActive {
+                self.leftRecentAccels.append(signal)
+                if self.leftRecentAccels.count > 6 { self.leftRecentAccels.removeFirst() }
+                // Keep right at baseline
+                self.rightRecentAccels.append(0.0)
+                if self.rightRecentAccels.count > 6 { self.rightRecentAccels.removeFirst() }
+            } else if rightActive {
+                self.rightRecentAccels.append(signal)
+                if self.rightRecentAccels.count > 6 { self.rightRecentAccels.removeFirst() }
+                // Keep left at baseline
+                self.leftRecentAccels.append(0.0)
+                if self.leftRecentAccels.count > 6 { self.leftRecentAccels.removeFirst() }
+            } else {
+                // Neutral position - minimal signal to both
+                self.leftRecentAccels.append(signal * 0.1)
+                if self.leftRecentAccels.count > 6 { self.leftRecentAccels.removeFirst() }
+                self.rightRecentAccels.append(signal * 0.1)
+                if self.rightRecentAccels.count > 6 { self.rightRecentAccels.removeFirst() }
+            }
+            
             let leftAvg = self.leftRecentAccels.reduce(0, +) / Double(self.leftRecentAccels.count)
-
-            self.rightRecentAccels.append(signal * rightWeight)
-            if self.rightRecentAccels.count > 6 { self.rightRecentAccels.removeFirst() }
             let rightAvg = self.rightRecentAccels.reduce(0, +) / Double(self.rightRecentAccels.count)
 
             // Update rolling noise window for dynamic thresholding
@@ -270,12 +375,22 @@ class BluetoothControllerManager: NSObject, ObservableObject {
                 self.rightWasAboveThreshold = false
             }
 
-            // Speed mapping (both sides)
-            let rawLeftSpeed: Double = leftAvg < 0.08 ? 0.75 : min(1.3, 0.75 + min(0.55, (leftAvg - 0.08) * 1.0))
-            self.leftSmoothedSpeed = self.leftSmoothedSpeed * 0.25 + rawLeftSpeed * 0.75
-
-            let rawRightSpeed: Double = rightAvg < 0.08 ? 0.75 : min(1.3, 0.75 + min(0.55, (rightAvg - 0.08) * 1.0))
-            self.rightSmoothedSpeed = self.rightSmoothedSpeed * 0.25 + rawRightSpeed * 0.75
+            // Speed mapping (with clear left/right separation)
+            if leftActive {
+                let rawLeftSpeed: Double = leftAvg < 0.08 ? 0.75 : min(1.3, 0.75 + min(0.55, (leftAvg - 0.08) * 1.0))
+                self.leftSmoothedSpeed = self.leftSmoothedSpeed * 0.25 + rawLeftSpeed * 0.75
+                // Decay right side when not active
+                self.rightSmoothedSpeed = max(0.75, self.rightSmoothedSpeed * 0.7)
+            } else if rightActive {
+                let rawRightSpeed: Double = rightAvg < 0.08 ? 0.75 : min(1.3, 0.75 + min(0.55, (rightAvg - 0.08) * 1.0))
+                self.rightSmoothedSpeed = self.rightSmoothedSpeed * 0.25 + rawRightSpeed * 0.75
+                // Decay left side when not active
+                self.leftSmoothedSpeed = max(0.75, self.leftSmoothedSpeed * 0.7)
+            } else {
+                // Neutral - decay both toward baseline
+                self.leftSmoothedSpeed = max(0.75, self.leftSmoothedSpeed * 0.8)
+                self.rightSmoothedSpeed = max(0.75, self.rightSmoothedSpeed * 0.8)
+            }
 
             // Aggressive decay if no strokes for a short period (prevents 'lock' after shaking)
             let now2 = Date()
@@ -286,37 +401,40 @@ class BluetoothControllerManager: NSObject, ObservableObject {
                 rightSmoothedSpeed = max(0.75, rightSmoothedSpeed * 0.55)
             }
 
-            // Send per-device updates
+            // Send per-device updates (only when that side is active or has significant motion)
             if let left = self.devices.first(where: { $0.id == "airpod_left" }) {
-                // Debug: log left update
                 // publish computed SPMs for debug
                 DispatchQueue.main.async {
                     self.debugLeftSPM = leftSPM
                 }
 
-                if Int(leftSPM) == 0 {
-                    // occasionally log small accel values to help debugging
-                    if Int.random(in: 0..<200) == 0 {
-                        print("ℹ️ Left update: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), leftSPM=0")
+                // Only send updates when left is active or has motion
+                if leftActive || leftAvg > 0.05 {
+                    if Int(leftSPM) > 0 {
+                        print("📤 LEFT active: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(leftSPM))")
                     }
+                    self.delegate?.didReceiveMotion(from: left.id, strokingSpeed: self.leftSmoothedSpeed, steering: tilt, spm: leftSPM)
                 } else {
-                    print("📤 Sending left motion: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(leftSPM))")
+                    // Send baseline when inactive
+                    self.delegate?.didReceiveMotion(from: left.id, strokingSpeed: 0.75, steering: tilt, spm: 0)
                 }
-                self.delegate?.didReceiveMotion(from: left.id, strokingSpeed: self.leftSmoothedSpeed, steering: tilt, spm: leftSPM)
             }
+            
             if let right = self.devices.first(where: { $0.id == "airpod_right" }) {
                 DispatchQueue.main.async {
                     self.debugRightSPM = rightSPM
                 }
 
-                if Int(rightSPM) == 0 {
-                    if Int.random(in: 0..<200) == 0 {
-                        print("ℹ️ Right update: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), rightSPM=0")
+                // Only send updates when right is active or has motion
+                if rightActive || rightAvg > 0.05 {
+                    if Int(rightSPM) > 0 {
+                        print("📤 RIGHT active: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(rightSPM))")
                     }
+                    self.delegate?.didReceiveMotion(from: right.id, strokingSpeed: self.rightSmoothedSpeed, steering: tilt, spm: rightSPM)
                 } else {
-                    print("📤 Sending right motion: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(rightSPM))")
+                    // Send baseline when inactive
+                    self.delegate?.didReceiveMotion(from: right.id, strokingSpeed: 0.75, steering: tilt, spm: 0)
                 }
-                self.delegate?.didReceiveMotion(from: right.id, strokingSpeed: self.rightSmoothedSpeed, steering: tilt, spm: rightSPM)
             }
         }
 

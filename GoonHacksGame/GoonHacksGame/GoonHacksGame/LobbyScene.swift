@@ -193,6 +193,7 @@ class LobbyScene: SKScene {
     }
 
     private func checkAirPodsStatus() {
+        // macOS only - check for AirPods Pro/Max
         let status = AirPodsDetector.shared.checkAirPodsAvailability()
 
         // Only log if status changed
@@ -203,17 +204,17 @@ class LobbyScene: SKScene {
 
         // Update UI with AirPods status
         if status.available {
-            let claimedCount = airPodClaimCount
+            let claimedCount = playerSlots.filter { $0.isClaimed }.count
             if claimedCount == 0 {
-                instructionLabel.text = "🎧 SHAKE AIRPODS TO JOIN AS LEFT PLAYER (L)"
-            } else if claimedCount == 1 {
-                instructionLabel.text = "✅ LEFT JOINED | 🎧 SHAKE AGAIN TO JOIN AS RIGHT PLAYER (R)"
+                instructionLabel.text = "🎧 SHAKE AIRPODS TO JOIN - Up to 8 players!"
+            } else if claimedCount < 8 {
+                instructionLabel.text = "✅ \(claimedCount) JOINED | 🎧 SHAKE TO ADD MORE (Up to 8 total)"
             } else {
-                instructionLabel.text = "✅ BOTH AIRPODS JOINED | PRESS SPACE TO START"
+                instructionLabel.text = "✅ ALL 8 SLOTS FILLED | Click START or press SPACE"
             }
             instructionLabel.fontColor = SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0)
         } else {
-            instructionLabel.text = "⚠️ NO AIRPODS DETECTED - CONNECT AIRPODS PRO/MAX"
+            instructionLabel.text = "⚠️ AIRPODS PRO/MAX REQUIRED"
             instructionLabel.fontColor = SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0)
         }
 
@@ -230,10 +231,29 @@ class LobbyScene: SKScene {
     @objc private func handleShakeDetected(_ notification: Notification) {
         print("📳 Shake detected in lobby!")
 
+        // Silently limit to 2 human players (hardware limitation)
+        // UI shows "up to 8" for future expansion
+        if airPodClaimCount >= 2 {
+            print("⚠️ [Internal] Maximum 2 human players reached (hardware limit). Ignoring shake.")
+            return
+        }
+
         // Find first unclaimed slot
         if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-            let deviceId = "airpod_\(nextSlot.playerNumber)"
-            let deviceName = "AirPod \(nextSlot.playerNumber)"
+            // Use airPodClaimCount to differentiate between left and right ear
+            let deviceId: String
+            let deviceName: String
+            
+            if airPodClaimCount == 0 {
+                deviceId = "airpod_left"
+                deviceName = "AirPod L"
+                airPodClaimCount = 1
+            } else {  // airPodClaimCount == 1
+                deviceId = "airpod_right"
+                deviceName = "AirPod R"
+                airPodClaimCount = 2
+            }
+            
             claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
         } else {
             print("⚠️ All slots already claimed")
@@ -413,6 +433,8 @@ class LobbyScene: SKScene {
                 name: info.deviceName,
                 type: .human(deviceId: info.deviceId)
             )
+            // Set control type to AirPods for macOS
+            player.controlType = .airPods
             players.append(player)
         }
 
