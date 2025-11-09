@@ -1,4 +1,3 @@
-//
 //  PhotoCaptureScene.swift
 //  GoonHacksGame
 //

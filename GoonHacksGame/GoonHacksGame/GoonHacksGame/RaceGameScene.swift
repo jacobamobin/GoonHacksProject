@@ -534,8 +534,14 @@ class RaceGameScene: SKScene {
                 scoreboardNode.addChild(colorCircle)
             }
 
-            // Player name
-            let nameLabel = SKLabelNode(text: racer.player.name)
+            // Display name formatting: Humans -> "P# | DeviceName"; CPUs -> "P# | Computer"
+            let displayName: String
+            if racer.player.isCPU {
+                displayName = "P\(racer.player.playerNumber) | Computer"
+            } else {
+                displayName = "P\(racer.player.playerNumber) | \(racer.player.name)"
+            }
+            let nameLabel = SKLabelNode(text: displayName)
             nameLabel.fontSize = 16
             nameLabel.fontColor = .white
             nameLabel.horizontalAlignmentMode = .left
@@ -799,3 +805,4 @@ extension RaceGameScene: MultipeerManagerDelegate {
         print("❌ Peer disconnected: \(peer.displayName)")
     }
 }
+

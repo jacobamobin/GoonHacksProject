@@ -20,6 +20,12 @@ protocol MotionControllerDelegate: AnyObject {
     func didDetectShake()  // For player registration
 }
 
+// MARK: - Ear Side (for splitting one motion feed into two independent controllers)
+enum EarSide {
+    case left
+    case right
+}
+
 // MARK: - AirPods Motion Controller
 
 @available(macOS 11.0, iOS 14.0, *)
@@ -27,6 +33,7 @@ class AirPodsMotionController {
     weak var delegate: MotionControllerDelegate?
 
     private let motionManager = CMHeadphoneMotionManager()
+    var earSide: EarSide?
 
     // Calibration
     private var calibrationOffset = CMAttitude()
@@ -89,17 +96,18 @@ class AirPodsMotionController {
     private func processMotion(_ motion: CMDeviceMotion) {
         let gravity = motion.gravity
         let acceleration = motion.userAcceleration
+        let tiltX = gravity.x
 
         // 1. Check for shake (for registration)
         detectShake(acceleration: acceleration)
 
-        // 2. Check for boost gesture (quick forward acceleration)
-        detectBoost(acceleration: acceleration)
+        // 2. Check for boost gesture (quick forward tilt) — gate by ear side
+        detectBoost(acceleration: acceleration, tiltX: tiltX)
 
-        // 3. Detect stroking speed (up/down motion from acceleration)
-        detectStrokingSpeed(acceleration: acceleration)
+        // 3. Detect stroking speed (up/down motion from acceleration) — gate by ear side
+        detectStrokingSpeed(acceleration: acceleration, tiltX: tiltX)
 
-        // 4. Process steering from gravity (tilt orientation)
+        // 4. Process steering from gravity (tilt orientation) — gate by ear side
         processSteering(gravity: gravity)
     }
 
@@ -113,9 +121,20 @@ class AirPodsMotionController {
     private var lastPeakTime: Date = Date()
     private var wasAboveThreshold = false
 
-    private func detectStrokingSpeed(acceleration: CMAcceleration) {
-        // STROKING = UP/DOWN MOTION ONLY
-        // Only use Y-axis acceleration for stroking motion
+    private func detectStrokingSpeed(acceleration: CMAcceleration, tiltX: Double) {
+        // Determine if this controller should be active based on tilt direction
+        let active: Bool
+        if let side = earSide {
+            if side == .left {
+                active = tiltX < -0.1
+            } else {
+                active = tiltX > 0.1
+            }
+        } else {
+            active = true
+        }
+
+        // STROKING = UP/DOWN MOTION ONLY (use Y-axis)
         let totalAccel = abs(acceleration.y)
 
         // Simple smoothing (keep last 3 readings only for faster response)
@@ -124,6 +143,14 @@ class AirPodsMotionController {
             recentAccelerations.removeFirst()
         }
         let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)
+
+        // If not active, decay toward baseline and send baseline updates so inactive side doesn't mirror the active one
+        if !active {
+            strokingVelocity = max(0.75, strokingVelocity * 0.95)
+            delegate?.didReceiveSpeed(0.75)
+            delegate?.didReceiveSPM(0)
+            return
+        }
 
         // PEAK DETECTION for SPM (Strokes Per Minute)
         let peakThreshold = 0.2  // Lowered from 0.3G - motion above this counts as a stroke
@@ -149,7 +176,6 @@ class AirPodsMotionController {
                     let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
                     if timeWindow > 0 {
                         let spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
-                        // Send SPM to delegate (MotionController will update players)
                         delegate?.didReceiveSPM(spm)
                     }
                 }
@@ -159,13 +185,11 @@ class AirPodsMotionController {
         }
 
         // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
-        // No motion = 0.75x (slower than fast CPUs 1.1x), max shaking = 1.3x
+        // No motion = 0.75x, max shaking = 1.3x
         let rawSpeed: Double
         if avgAccel < 0.15 {
-            rawSpeed = 0.75  // At rest = slower than fast CPUs, competitive with medium CPUs
+            rawSpeed = 0.75
         } else {
-            // ANY motion adds boost - 0.15G to 0.8G gives 0.75x to 1.3x
-            // 0.15G = start of bonus, 0.8G+ = full 55% bonus (0.75 + 0.55 = 1.3)
             let bonus = min(0.55, (avgAccel - 0.15) * 0.85)
             rawSpeed = 0.75 + bonus
         }
@@ -173,21 +197,16 @@ class AirPodsMotionController {
         // Very light smoothing for responsiveness
         strokingVelocity = strokingVelocity * 0.6 + rawSpeed * 0.4
 
-        // Debug logging (every 60 frames = ~1 second)
+        // Debug logging (every ~1s)
         if Int.random(in: 0..<60) == 0 {
-            // Calculate SPM for logging
             let spm: Double
             if strokeTimestamps.count >= 2 {
                 let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
-                if timeWindow > 0 {
-                    spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
-                } else {
-                    spm = 0
-                }
+                spm = timeWindow > 0 ? Double(strokeTimestamps.count - 1) / timeWindow * 60.0 : 0
             } else {
                 spm = 0
             }
-            print("🏃 ANY MOTION: total=\(String(format: "%.3f", avgAccel))G → speed=\(String(format: "%.2f", strokingVelocity))x, SPM=\(Int(spm))")
+            print("🏃 ANY MOTION: total=\(String(format: "%.3f", avgAccel))G → speed=\(String(format: "%.2f", strokingVelocity))x, SPM=\(Int(spm)))")
         }
 
         // Send speed update
@@ -223,7 +242,12 @@ class AirPodsMotionController {
         previousAcceleration = acceleration
     }
 
-    private func detectBoost(acceleration: CMAcceleration) {
+    private func detectBoost(acceleration: CMAcceleration, tiltX: Double) {
+        // Gate boost by ear side and tilt direction
+        if let side = earSide {
+            if side == .left && tiltX >= -0.1 { return }
+            if side == .right && tiltX <= 0.1 { return }
+        }
         // Detect quick forward acceleration (positive Z in headphone space)
         if acceleration.z > boostThreshold || acceleration.y > boostThreshold {
             let now = Date()
@@ -251,6 +275,14 @@ class AirPodsMotionController {
             // Strong amplification for responsive steering
             steerX = rawSteerX * 3.0  // Increased from 2.0
             steerX = max(-1.0, min(1.0, steerX))  // Clamp to -1...1
+        }
+
+        // Suppress steering when this side isn't active
+        if let side = earSide {
+            let active = (side == .left && rawSteerX < -0.1) || (side == .right && rawSteerX > 0.1)
+            if !active {
+                steerX = 0.0
+            }
         }
 
         // Debug logging (every 30 frames = ~0.5 seconds)
@@ -395,6 +427,7 @@ class MotionController: MotionControllerDelegate {
 
     var player: Player?  // Primary player (for backwards compatibility)
     var players: [Player] = []  // All players controlled by this device (co-op mode!)
+    var earSide: EarSide?
 
     // Network throttling
     private var lastNetworkUpdate: Date = Date()
@@ -413,6 +446,7 @@ class MotionController: MotionControllerDelegate {
             if #available(macOS 11.0, iOS 14.0, *) {
                 airPodsController = AirPodsMotionController()
                 airPodsController?.delegate = self
+                airPodsController?.earSide = earSide
                 airPodsController?.start()
 
                 // Check if actually available
@@ -580,3 +614,4 @@ class AirPodsDetector {
         }
     }
 }
+

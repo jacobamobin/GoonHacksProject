@@ -155,6 +155,14 @@ class GameCoordinator {
                 } else {
                     // Create new controller for non-AirPod devices (e.g. networked iOS)
                     let controller = MotionController()
+                    
+                    // Assign ear side based on deviceId for independent control
+                    if deviceId == "airpod_left" {
+                        controller.earSide = .left
+                    } else if deviceId == "airpod_right" {
+                        controller.earSide = .right
+                    }
+
                     controller.player = player
                     controller.players = [player]  // Initialize with first player
 
@@ -193,3 +201,4 @@ class GameCoordinator {
         )
     }
 }
+

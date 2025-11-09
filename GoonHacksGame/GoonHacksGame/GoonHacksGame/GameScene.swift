@@ -14,6 +14,7 @@ class GameScene: SKScene {
     // Camera capture properties
     private var captureSession: AVCaptureSession?
     private var photoOutput: AVCapturePhotoOutput?
+    private var previewLayer: AVCaptureVideoPreviewLayer?
     
     var entities = [GKEntity]()
     var graphs = [String : GKGraph]()
@@ -53,14 +54,25 @@ class GameScene: SKScene {
         setupCameraIfNeeded()
     }
     
+    override func didMove(to view: SKView) {
+        super.didMove(to: view)
+        // Ensure window is centered once view is attached
+        self.view?.window?.center()
+        // Prepare camera capture (ensures we have a view for preview layer)
+        setupCameraIfNeeded()
+    }
+    
     // MARK: - Camera Setup & Capture
     private func setupCameraIfNeeded() {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        print("📸 Camera auth status: \(status.rawValue)")
+        switch status {
         case .authorized:
             setupCaptureSession()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 DispatchQueue.main.async {
+                    print("📸 Camera access prompt result: granted=\(granted)")
                     if granted {
                         self?.setupCaptureSession()
                     } else {
@@ -91,6 +103,19 @@ class GameScene: SKScene {
         session.commitConfiguration()
         self.captureSession = session
         self.photoOutput = output
+
+        // Add preview layer to show camera feed
+        if let view = self.view {
+            let layer = AVCaptureVideoPreviewLayer(session: session)
+            layer.videoGravity = .resizeAspectFill
+            layer.frame = view.bounds
+            // Ensure SpriteKit content stays visible above the preview
+            view.wantsLayer = true
+            view.layer?.insertSublayer(layer, at: 0)
+            self.previewLayer = layer
+        } else {
+            print("⚠️ No view available for preview layer yet")
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak session] in
             session?.startRunning()
@@ -190,6 +215,13 @@ class GameScene: SKScene {
         
         self.lastUpdateTime = currentTime
     }
+
+    override func didChangeSize(_ oldSize: CGSize) {
+        super.didChangeSize(oldSize)
+        if let view = self.view {
+            previewLayer?.frame = view.bounds
+        }
+    }
 }
 
 extension GameScene: AVCapturePhotoCaptureDelegate {
@@ -214,6 +246,19 @@ extension GameScene: AVCapturePhotoCaptureDelegate {
             SKAction.fadeOut(withDuration: 0.4),
             SKAction.removeFromParent()
         ]))
+        // Show captured image as a sprite for confirmation
+        let texture = SKTexture(image: image)
+        let sprite = SKSpriteNode(texture: texture)
+        sprite.size = CGSize(width: 320, height: 240)
+        sprite.position = CGPoint(x: self.size.width/2, y: self.size.height/2)
+        sprite.zPosition = 1000
+        addChild(sprite)
+        sprite.run(SKAction.sequence([
+            SKAction.wait(forDuration: 2.0),
+            SKAction.fadeOut(withDuration: 0.4),
+            SKAction.removeFromParent()
+        ]))
+        print("✅ Photo captured and displayed")
         // TODO: Save `image` to disk or use it as needed
     }
 }

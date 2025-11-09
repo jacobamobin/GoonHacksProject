@@ -116,7 +116,12 @@ class Racer {
         // CPU speed range: minimum = player idle speed (0.75x), max = 1.0x
         // Players can easily beat CPUs by shaking (up to 1.3x)
         if player.isCPU {
-            cpuPersonality = CGFloat.random(in: 0.75...1.0)  // Never faster than base speed
+            // CPUs should be a tiny bit behind players and all different
+            // Base around 0.9x with slight per-CPU variance seeded by player number
+            let base: CGFloat = 0.9
+            let seedOffset: CGFloat = 0.02 * CGFloat(player.playerNumber % 5) // 0.00, 0.02, 0.04, 0.06, 0.08
+            let jitter: CGFloat = CGFloat.random(in: -0.03...0.03)
+            cpuPersonality = max(0.8, min(1.1, base + seedOffset + jitter))
         }
     }
 
@@ -391,7 +396,7 @@ class GameState {
         let startTrackPoint = trackPoints.first ?? TrackPoint(position: .zero, width: trackWidth)
 
         // Assign each racer to a lane (horizontal offset)
-        let laneWidth: CGFloat = 45  // Space between racers
+        let laneWidth: CGFloat = 70  // Space between racers (was 45)
         let totalLaneWidth = CGFloat(players.count - 1) * laneWidth
         let startLaneOffset = -totalLaneWidth / 2
 
@@ -442,10 +447,14 @@ class GameState {
                     racer.lastCheckpointPassed = checkpoint.id
                 }
 
-                // Find last place racer
-                if let lastPlace = activeRacers().min(by: { $0.position.y < $1.position.y }) {
-                    lastPlace.player.isEliminated = true
-                    eliminated.append(lastPlace.player)
+                // Find last place racers (within epsilon), eliminate only ONE at random
+                let active = activeRacers()
+                guard let minY = active.map({ $0.position.y }).min() else { continue }
+                let epsilon: CGFloat = 20  // consider ties within 20 pts
+                let tiedLast = active.filter { abs($0.position.y - minY) <= epsilon }
+                if let loser = tiedLast.randomElement() {
+                    loser.player.isEliminated = true
+                    eliminated.append(loser.player)
                 }
             }
         }
@@ -453,3 +462,4 @@ class GameState {
         return eliminated.isEmpty ? nil : eliminated
     }
 }
+
