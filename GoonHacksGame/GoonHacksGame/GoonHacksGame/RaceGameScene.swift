@@ -71,6 +71,9 @@ class RaceGameScene: SKScene {
         setupUI()
         setupBluetoothControllers()
 
+        // Start motion controllers immediately
+        gameCoordinator?.startMotionControllers(for: gameState.players)
+
         // Start with countdown
         startCountdown()
     }
@@ -112,8 +115,9 @@ class RaceGameScene: SKScene {
     private func setupTrack() {
         // GLOWING NEON BORDERS - like a fluid racing lane
         let trackPoints = gameState.trackPoints
+        let laneWidth = gameState.trackWidth / 8
 
-        // Draw track with GLOWING borders
+        // Draw track with GLOWING borders and lanes
         for i in 0..<(trackPoints.count - 1) {
             let point = trackPoints[i]
             let nextPoint = trackPoints[i + 1]
@@ -137,6 +141,17 @@ class RaceGameScene: SKScene {
             rightEdge.glowWidth = 20  // Big glow!
             rightEdge.zPosition = 5
             trackNode.addChild(rightEdge)
+
+            // Lane dividers
+            for j in 1..<8 {
+                let x = point.position.x - segmentWidth/2 + CGFloat(j) * laneWidth
+                let line = SKShapeNode(rectOf: CGSize(width: 2, height: abs(nextPoint.position.y - point.position.y) + 10))
+                line.position = CGPoint(x: x, y: (point.position.y + nextPoint.position.y) / 2)
+                line.fillColor = SKColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 0.2)
+                line.strokeColor = .clear
+                line.zPosition = 2
+                trackNode.addChild(line)
+            }
 
             // Darker fluid background (like swimming pool)
             if i % 3 == 0 {
@@ -220,18 +235,20 @@ class RaceGameScene: SKScene {
         // Add face photo if player has one
         if let faceImage = racer.player.faceImage {
             let faceSprite = SKSpriteNode(texture: SKTexture(image: faceImage))
-            faceSprite.size = CGSize(width: 45, height: 45)
+            faceSprite.size = CGSize(width: 60, height: 60)
             faceSprite.position = CGPoint(x: 0, y: 0)
             faceSprite.zPosition = 1
             faceSprite.name = "face"
 
             // Circular mask
-            let maskNode = SKShapeNode(circleOfRadius: 22.5)
+            let maskNode = SKShapeNode(circleOfRadius: 30)
             maskNode.fillColor = .white
             let cropNode = SKCropNode()
             cropNode.maskNode = maskNode
             cropNode.addChild(faceSprite)
-            body.addChild(cropNode)
+            if let head = body.childNode(withName: "head") {
+                head.addChild(cropNode)
+            }
         }
 
         // Player number label
@@ -249,16 +266,39 @@ class RaceGameScene: SKScene {
         racersNode.addChild(racerNode)
     }
 
-    private func createSpermShape(color: SKColor) -> SKShapeNode {
+    private func createSpermShape(color: SKColor) -> SKNode {
+        let spermNode = SKNode()
+
         // Head with player color
-        let head = SKShapeNode(circleOfRadius: 25)
+        let head = SKShapeNode(circleOfRadius: 35)
         head.fillColor = color
         head.strokeColor = color.withAlphaComponent(0.8)
         head.lineWidth = 4
         head.glowWidth = 15
         head.name = "head"
+        spermNode.addChild(head)
 
-        return head
+        // Tail
+        let tailPath = UIBezierPath()
+        tailPath.move(to: CGPoint(x: 0, y: -35))
+        tailPath.addCurve(to: CGPoint(x: 0, y: -100), controlPoint1: CGPoint(x: -20, y: -60), controlPoint2: CGPoint(x: 20, y: -80))
+
+        let tail = SKShapeNode(path: tailPath.cgPath)
+        tail.lineWidth = 8
+        tail.strokeColor = color
+        tail.glowWidth = 10
+        tail.name = "tail"
+        spermNode.addChild(tail)
+
+        // Tail animation
+        let wiggle = SKAction.sequence([
+            SKAction.rotate(byAngle: 0.2, duration: 0.1),
+            SKAction.rotate(byAngle: -0.4, duration: 0.2),
+            SKAction.rotate(byAngle: 0.2, duration: 0.1)
+        ])
+        tail.run(SKAction.repeatForever(wiggle))
+
+        return spermNode
     }
 
     private func createParticleTrail(color: SKColor) -> SKEmitterNode {
@@ -272,7 +312,7 @@ class RaceGameScene: SKScene {
         trail.particleColor = color
         trail.particleColorBlendFactor = 1.0
         trail.particleBlendMode = .add
-        trail.position = CGPoint(x: 0, y: -25)
+        trail.position = CGPoint(x: 0, y: -100)
         trail.emissionAngle = CGFloat.pi * 1.5
         trail.emissionAngleRange = CGFloat.pi * 0.2
         trail.particleSpeed = 50
@@ -300,6 +340,35 @@ class RaceGameScene: SKScene {
     private func setupUI() {
         // Scoreboard (top left)
         createScoreboard()
+
+        // Player positions (top of screen)
+        let laneWidth = gameState.trackWidth / 8
+        let startX = -gameState.trackWidth / 2 + laneWidth / 2
+        for i in 0..<8 {
+            let x = startX + CGFloat(i) * laneWidth
+            let y = size.height / 2 - 50
+
+            let player = gameState.players.first { $0.playerNumber == i + 1 }
+
+            let positionNode = SKNode()
+            positionNode.position = CGPoint(x: x, y: y)
+            positionNode.name = "playerPosition_\(i + 1)"
+            gameCamera.addChild(positionNode)
+
+            let numberLabel = SKLabelNode(text: "P\(i + 1)")
+            numberLabel.fontSize = 24
+            numberLabel.fontName = "SF Pro"
+            numberLabel.fontColor = player != nil ? playerColor(playerNumber: i + 1) : .gray
+            positionNode.addChild(numberLabel)
+
+            let rankLabel = SKLabelNode(text: "-")
+            rankLabel.fontSize = 20
+            rankLabel.fontName = "SF Pro"
+            rankLabel.fontColor = .white
+            rankLabel.position = CGPoint(x: 0, y: -30)
+            rankLabel.name = "rankLabel"
+            positionNode.addChild(rankLabel)
+        }
     }
 
     private func setupBluetoothControllers() {
@@ -381,8 +450,7 @@ class RaceGameScene: SKScene {
     private func startRace() {
         isPaused = false
         gameState.raceStartTime = Date().timeIntervalSince1970
-        // Start motion controllers now that the race has actually started
-        gameCoordinator?.startMotionControllers(for: gameState.players)
+        // Motion controllers are already started, so we don't need to do anything here.
 
         print("🏁 RACE STARTED!")
         // Debug: print mapping of players -> device IDs to verify control assignment
@@ -435,6 +503,13 @@ class RaceGameScene: SKScene {
             if let racerNode = racersNode.childNode(withName: "racer_\(racer.player.id)") {
                 racerNode.position = racer.position
                 racerNode.zRotation = racer.rotation
+
+                // Update tail animation speed based on SPM
+                if let tail = racerNode.childNode(withName: "sperm")?.childNode(withName: "tail") {
+                    let spm = racer.player.strokesPerMinute
+                    let speed = 0.5 + (spm / 100.0)
+                    tail.speed = CGFloat(speed)
+                }
             }
         }
 
@@ -448,6 +523,19 @@ class RaceGameScene: SKScene {
 
         // Update scoreboard
         updateScoreboard()
+
+        // Update player positions
+        updatePlayerPositions()
+    }
+
+    private func updatePlayerPositions() {
+        let sortedRacers = gameState.racers.sorted { $0.position.y > $1.position.y }
+        for (index, racer) in sortedRacers.enumerated() {
+            if let positionNode = gameCamera.childNode(withName: "playerPosition_\(racer.player.playerNumber)"),
+               let rankLabel = positionNode.childNode(withName: "rankLabel") as? SKLabelNode {
+                rankLabel.text = "\(index + 1)"
+            }
+        }
     }
 
     private func updateCamera() {
@@ -607,6 +695,22 @@ class RaceGameScene: SKScene {
 
     // MARK: - Input
 
+    override func mouseDown(with event: NSEvent) {
+        if isPauseMenuVisible {
+            let location = event.location(in: pauseMenu!)
+            let clickedNode = pauseMenu!.atPoint(location)
+
+            if clickedNode.name == "resumeButton" {
+                hidePauseMenu()
+            } else if clickedNode.name == "replayButton" {
+                replayWithSamePlayers()
+            } else if clickedNode.name == "lobbyButton" {
+                hidePauseMenu()
+                gameCoordinator?.returnToLobby()
+            }
+        }
+    }
+
     override func keyDown(with event: NSEvent) {
         if isPauseMenuVisible {
             handlePauseMenuInput(event)
@@ -667,26 +771,29 @@ class RaceGameScene: SKScene {
         pauseMenu?.addChild(menuBg)
 
         // Title
-        let titleLabel = SKLabelNode(text: "⏸ PAUSED")
+        let titleLabel = SKLabelNode(text: "PAUSED")
         titleLabel.fontSize = 48
+        titleLabel.fontName = "SF Pro"
         titleLabel.fontColor = .white
         titleLabel.position = CGPoint(x: 0, y: 180)
         pauseMenu?.addChild(titleLabel)
 
         // Menu options
         let options = [
-            ("1", "Resume Race"),
-            ("2", "Replay with Same Players"),
-            ("3", "Back to Lobby")
+            ("resumeButton", "Resume Race"),
+            ("replayButton", "Replay with Same Players"),
+            ("lobbyButton", "Back to Lobby")
         ]
 
         for (index, option) in options.enumerated() {
             let yPos: CGFloat = 80 - CGFloat(index) * 70
 
-            let optionLabel = SKLabelNode(text: "[\(option.0)] \(option.1)")
+            let optionLabel = SKLabelNode(text: option.1)
             optionLabel.fontSize = 28
+            optionLabel.fontName = "SF Pro"
             optionLabel.fontColor = .white
             optionLabel.position = CGPoint(x: 0, y: yPos)
+            optionLabel.name = option.0
             pauseMenu?.addChild(optionLabel)
         }
 
@@ -762,7 +869,7 @@ extension RaceGameScene: BluetoothControllerDelegate {
         }
 
         // Only update if race has started
-        guard gameState?.raceStartTime != nil else {
+        guard let gameState = gameState, gameState.raceStartTime != nil else {
             return
         }
 

@@ -32,8 +32,8 @@ class ViewController: NSViewController {
         // Load tracklets before starting
         TrackletLoader.shared.loadTracklets()
 
-        // Show lobby
-        gameCoordinator?.showLobby()
+        // Show title screen
+        gameCoordinator?.showTitleScreen()
 
         print("✅ Game coordinator initialized")
     }

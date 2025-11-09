@@ -12,6 +12,7 @@ class GameCoordinator {
     weak var view: SKView?
 
     private var currentScene: SKScene?
+    private var titleScene: TitleScene?
     private var lobbyScene: LobbyScene?
     private var photoCaptureScene: PhotoCaptureScene?
     private var raceScene: RaceGameScene?
@@ -24,6 +25,21 @@ class GameCoordinator {
     }
 
     // MARK: - Scene Management
+
+    func showTitleScreen() {
+        guard let view = view else { return }
+
+        // Create title scene
+        titleScene = TitleScene(size: CGSize(width: 1920, height: 1080))
+        titleScene?.gameCoordinator = self
+        titleScene?.scaleMode = .aspectFit
+
+        // Present
+        view.presentScene(titleScene)
+        currentScene = titleScene
+
+        print("✅ Title screen loaded")
+    }
 
     func showLobby() {
         guard let view = view else { return }
