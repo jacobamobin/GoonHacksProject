@@ -455,17 +455,18 @@ class GameState {
     func checkCheckpoints() -> [Player]? {
         var eliminated: [Player] = []
 
-        for checkpoint in checkpoints where !checkpoint.passed {
-            let racersAtCheckpoint = activeRacers().filter { racer in
-                racer.position.y >= checkpoint.position.y && racer.lastCheckpointPassed < checkpoint.id
-            }
+        for i in 0..<checkpoints.count {
+            if checkpoints[i].passed { continue }
 
-            if !racersAtCheckpoint.isEmpty {
-                // Mark checkpoint as passed for these racers
-                for racer in racersAtCheckpoint {
-                    racer.lastCheckpointPassed = checkpoint.id
-                }
+            let active = activeRacers()
+            let racersPastCheckpoint = active.filter { $0.position.y >= checkpoints[i].position.y }
 
+            // Trigger elimination when the second to last player crosses the line
+            if racersPastCheckpoint.count >= active.count - 1 {
+                checkpoints[i].passed = true
+
+                // Find the player who is furthest behind
+                if let loser = active.min(by: { $0.position.y < $1.position.y }) {
                 // Prevent double-processing of this checkpoint in subsequent frames
                 // by marking it passed (so we only eliminate at most one player here).
                 // This ensures a single elimination per checkpoint crossing event.
