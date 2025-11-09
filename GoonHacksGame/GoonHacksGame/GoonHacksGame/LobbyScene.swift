@@ -77,16 +77,18 @@ class LobbyScene: SKScene {
 
     private func setupUI() {
         // Title
-        titleLabel = SKLabelNode(text: "🏁 SPERM RACING")
+        titleLabel = SKLabelNode(text: "PLAYER SELECT")
         titleLabel.fontSize = 72
+        titleLabel.fontName = "SF Pro"
         titleLabel.fontColor = SKColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 1.0)
         titleLabel.position = CGPoint(x: size.width / 2, y: size.height - 100)
         titleLabel.zPosition = 100
         addChild(titleLabel)
 
         // Instructions
-        instructionLabel = SKLabelNode(text: "SHAKE YOUR AIRPODS TO CLAIM A SLOT!")
+        instructionLabel = SKLabelNode(text: "CLICK A SLOT TO JOIN")
         instructionLabel.fontSize = 32
+        instructionLabel.fontName = "SF Pro"
         instructionLabel.fontColor = .white
         instructionLabel.position = CGPoint(x: size.width / 2, y: size.height - 180)
         instructionLabel.zPosition = 100
@@ -286,6 +288,28 @@ class LobbyScene: SKScene {
         checkReadyState()
     }
 
+    func unclaimSlot(playerNumber: Int) {
+        guard playerNumber >= 1 && playerNumber <= 8 else { return }
+
+        // Check if slot is already claimed
+        guard claimedSlots[playerNumber] != nil else {
+            print("⚠️ Slot \(playerNumber) already unclaimed")
+            return
+        }
+
+        // Unclaim the slot
+        claimedSlots[playerNumber] = nil
+
+        // Update slot UI
+        if let slot = playerSlots.first(where: { $0.playerNumber == playerNumber }) {
+            slot.unclaim()
+        }
+
+        print("✅ Player \(playerNumber) unclaimed")
+
+        checkReadyState()
+    }
+
     private func checkReadyState() {
         // Need at least 2 players to start
         let humanPlayers = claimedSlots.count
@@ -359,8 +383,21 @@ class LobbyScene: SKScene {
             return  // Don't process as slot click
         }
         
-        // Ignore other clicks - only shake/keyboard can claim slots
-        // This prevents accidental slot claiming when clicking around
+        // Check if a player slot was clicked
+        for slot in playerSlots {
+            if slot.contains(location) {
+                if slot.isClaimed {
+                    // Unclaim the slot
+                    unclaimSlot(playerNumber: slot.playerNumber)
+                } else {
+                    // Claim the slot
+                    let deviceId = "player_\(slot.playerNumber)"
+                    let deviceName = "Player \(slot.playerNumber)"
+                    claimSlot(playerNumber: slot.playerNumber, deviceId: deviceId, deviceName: deviceName)
+                }
+                break
+            }
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -554,16 +591,31 @@ class PlayerSlotNode: SKNode {
         ]))
     }
 
+    func unclaim() {
+        isClaimed = false
+
+        // Reset visuals
+        background.fillColor = SKColor(white: 0.2, alpha: 0.8)
+        background.strokeColor = SKColor(white: 0.4, alpha: 1.0)
+        background.lineWidth = 2
+        background.glowWidth = 5
+
+        statusLabel.text = "EMPTY"
+        statusLabel.fontColor = SKColor(white: 0.6, alpha: 1.0)
+
+        deviceLabel.run(SKAction.fadeOut(withDuration: 0.3))
+    }
+
     private func playerColor(playerNumber: Int) -> SKColor {
         let colors: [SKColor] = [
-            SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0),  // Red
-            SKColor(red: 0.2, green: 0.6, blue: 1.0, alpha: 1.0),  // Blue
-            SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0),  // Green
-            SKColor(red: 1.0, green: 0.8, blue: 0.2, alpha: 1.0),  // Yellow
-            SKColor(red: 1.0, green: 0.4, blue: 0.8, alpha: 1.0),  // Pink
-            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // Purple
-            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // Orange
-            SKColor(red: 0.2, green: 1.0, blue: 0.8, alpha: 1.0),  // Cyan
+            SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0),  // 1: Red
+            SKColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0),  // 2: Yellow
+            SKColor(red: 0.2, green: 0.4, blue: 1.0, alpha: 1.0),  // 3: Blue
+            SKColor(red: 0.2, green: 1.0, blue: 0.2, alpha: 1.0),  // 4: Green
+            SKColor(red: 0.2, green: 0.9, blue: 0.9, alpha: 1.0),  // 5: Cyan
+            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // 6: Orange
+            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // 7: Purple
+            SKColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 1.0),  // 8: Brown
         ]
         return colors[(playerNumber - 1) % colors.count]
     }

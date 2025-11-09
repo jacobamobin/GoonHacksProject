@@ -118,10 +118,10 @@ class Racer {
         if player.isCPU {
             // CPUs should be a tiny bit behind players and all different
             // Base around 0.9x with slight per-CPU variance seeded by player number
-            let base: CGFloat = 0.9
-            let seedOffset: CGFloat = 0.02 * CGFloat(player.playerNumber % 5) // 0.00, 0.02, 0.04, 0.06, 0.08
-            let jitter: CGFloat = CGFloat.random(in: -0.03...0.03)
-            cpuPersonality = max(0.8, min(1.1, base + seedOffset + jitter))
+            let base: CGFloat = 0.85
+            let seedOffset: CGFloat = 0.03 * CGFloat(player.playerNumber % 5) // 0.00, 0.03, 0.06, 0.09, 0.12
+            let jitter: CGFloat = CGFloat.random(in: -0.05...0.05)
+            cpuPersonality = max(0.75, min(1.0, base + seedOffset + jitter))
         }
     }
 
@@ -421,12 +421,14 @@ class GameState {
         let checkpointInterval: CGFloat = 10000  // ~30 seconds at base speed
         for i in 0..<2 {
             let y = checkpointInterval * CGFloat(i + 1)
-            let checkpoint = Checkpoint(id: i, position: CGPoint(x: 0, y: y), width: trackWidth)
+            let trackPoint = trackPoints.first { $0.position.y >= y } ?? trackPoints.last!
+            let checkpoint = Checkpoint(id: i, position: CGPoint(x: trackPoint.position.x, y: y), width: trackWidth)
             checkpoints.append(checkpoint)
         }
 
         // Finish line at end
-        checkpoints.append(Checkpoint(id: 2, position: CGPoint(x: 0, y: trackLength), width: trackWidth))
+        let finishPoint = trackPoints.last!
+        checkpoints.append(Checkpoint(id: 2, position: CGPoint(x: finishPoint.position.x, y: trackLength), width: trackWidth))
     }
 
     func activeRacers() -> [Racer] {
