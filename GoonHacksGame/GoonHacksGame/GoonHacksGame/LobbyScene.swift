@@ -18,6 +18,7 @@ class LobbyScene: SKScene {
     // Player slots (1-8)
     var playerSlots: [PlayerSlotNode] = []
     var claimedSlots: [Int: (deviceId: String, deviceName: String)] = [:]  // playerNumber: deviceInfo
+    var airPodClaimCount = 0  // Track how many times AirPods have claimed (for "AirPods L", "AirPods R", etc.)
 
     // UI elements
     var titleLabel: SKLabelNode!
@@ -32,8 +33,12 @@ class LobbyScene: SKScene {
 
     // AirPods status check timer
     var airPodsCheckTimer: Timer?
-    
-    // Motion controller for shake detection
+    var lastAirPodsStatus: Bool?  // Track last status to only log changes
+
+    // Bluetooth controller manager for multiple devices
+    private var bluetoothManager: BluetoothControllerManager!
+
+    // Legacy single motion controller for shake detection
     private var shakeDetector: MotionController?
 
     // MARK: - Scene Lifecycle
@@ -59,6 +64,8 @@ class LobbyScene: SKScene {
         airPodsCheckTimer = nil
         shakeDetector?.stop()
         shakeDetector = nil
+        bluetoothManager?.disconnectAll()
+        bluetoothManager = nil
     }
 
     // MARK: - Setup
@@ -168,29 +175,49 @@ class LobbyScene: SKScene {
     }
     
     private func setupShakeDetection() {
-        // Create a motion controller specifically for shake detection in lobby
+        // Initialize Bluetooth controller manager for multiple devices
+        bluetoothManager = BluetoothControllerManager.shared
+        bluetoothManager.delegate = self
+
+        // Start discovering Bluetooth devices (AirPods, etc.)
+        bluetoothManager.startDiscovery()
+
+        // Legacy shake detector for notification-based shake events
         shakeDetector = MotionController()
         shakeDetector?.start(controlType: .airPods)
-        
-        print("🎧 Shake detection started for player registration")
+
+        print("🎧 Bluetooth device discovery started - Each shake claims a new slot")
+        print("📱 Supported: Multiple AirPods pairs, iOS devices via network")
     }
 
     private func checkAirPodsStatus() {
         let status = AirPodsDetector.shared.checkAirPodsAvailability()
-        print(status.message)
+
+        // Only log if status changed
+        if lastAirPodsStatus != status.available {
+            print(status.message)
+            lastAirPodsStatus = status.available
+        }
 
         // Update UI with AirPods status
         if status.available {
-            instructionLabel.text = "🎧 AIRPODS DETECTED! SHAKE TO CLAIM SLOT!"
+            let claimedCount = airPodClaimCount
+            if claimedCount == 0 {
+                instructionLabel.text = "🎧 SHAKE FOR LEFT PLAYER (L) | SHAKE AGAIN FOR RIGHT (R)"
+            } else if claimedCount == 1 {
+                instructionLabel.text = "✅ LEFT CLAIMED | 🎧 SHAKE FOR RIGHT PLAYER (R) | SPACE TO START"
+            } else {
+                instructionLabel.text = "✅ L & R CLAIMED | 🎧 SHAKE FOR MORE | SPACE TO START"
+            }
             instructionLabel.fontColor = SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0)
         } else {
-            instructionLabel.text = "⚠️ NO AIRPODS - USE KEYBOARD (RETURN TO CLAIM)"
+            instructionLabel.text = "⚠️ NO AIRPODS DETECTED - CONNECT AIRPODS PRO/MAX"
             instructionLabel.fontColor = SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0)
         }
 
-        // Schedule periodic check (every 2 seconds)
+        // Schedule periodic check (every 3 seconds)
         if airPodsCheckTimer == nil {
-            airPodsCheckTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            airPodsCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
                 self?.checkAirPodsStatus()
             }
         }
@@ -201,9 +228,27 @@ class LobbyScene: SKScene {
     @objc private func handleShakeDetected(_ notification: Notification) {
         print("📳 Shake detected in lobby!")
 
+        // Each shake claims a new slot (allows left/right AirPod to be separate players)
+        airPodClaimCount += 1
+
+        // Create unique device ID for this claim
+        let deviceId = "airpod_\(airPodClaimCount)"
+
+        // Label them as L/R or numbered
+        let deviceName: String
+        if airPodClaimCount == 1 {
+            deviceName = "AirPod L"  // Left
+        } else if airPodClaimCount == 2 {
+            deviceName = "AirPod R"  // Right
+        } else {
+            deviceName = "AirPod \(airPodClaimCount)"  // Additional
+        }
+
         // Find first unclaimed slot
         if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-            claimSlot(playerNumber: nextSlot.playerNumber, deviceId: "local", deviceName: "Local Player")
+            claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
+        } else {
+            print("⚠️ No unclaimed slots available")
         }
     }
 
@@ -211,12 +256,14 @@ class LobbyScene: SKScene {
 
     func claimSlot(playerNumber: Int, deviceId: String, deviceName: String) {
         guard playerNumber >= 1 && playerNumber <= 8 else { return }
+
+        // Check if slot is already claimed
         guard claimedSlots[playerNumber] == nil else {
             print("⚠️ Slot \(playerNumber) already claimed")
             return
         }
 
-        // Claim the slot
+        // Claim the slot (no duplicate device check - allow same AirPods to claim multiple slots)
         claimedSlots[playerNumber] = (deviceId, deviceName)
 
         // Update slot UI
@@ -224,7 +271,7 @@ class LobbyScene: SKScene {
             slot.claim(deviceName: deviceName)
         }
 
-        print("✅ Player \(playerNumber) claimed by \(deviceName)")
+        print("✅ Player \(playerNumber) claimed by '\(deviceName)' (device: \(deviceId))")
 
         // Broadcast to all peers
         MultipeerManager.shared.broadcast(
@@ -266,10 +313,12 @@ class LobbyScene: SKScene {
     }
 
     private func updateConnectionStatus() {
-        let connected = MultipeerManager.shared.connectedPeers.count
+        let networkPeers = MultipeerManager.shared.connectedPeers.count
+        let bluetoothDevices = bluetoothManager?.connectedCount ?? 0
+        let totalConnected = networkPeers + bluetoothDevices
         let claimed = claimedSlots.count
 
-        connectionStatusLabel.text = "Connected: \(connected) devices | Claimed: \(claimed)/8 slots"
+        connectionStatusLabel.text = "Connected: \(totalConnected) devices (\(bluetoothDevices) BT, \(networkPeers) net) | Claimed: \(claimed)/8 slots"
 
         if claimed >= 2 {
             connectionStatusLabel.fontColor = SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0)
@@ -280,30 +329,46 @@ class LobbyScene: SKScene {
 
     override func mouseDown(with event: NSEvent) {
         let location = event.location(in: self)
-
-        if let node = atPoint(location) as? SKShapeNode, node.name == "startButton" {
-            if readyToStart {
-                startRace()
+        let clickedNode = atPoint(location)
+        
+        // Check if start button or any of its children was clicked
+        // Walk up the parent hierarchy to find if we clicked the start button
+        var currentNode: SKNode? = clickedNode
+        var isStartButton = false
+        
+        while let node = currentNode {
+            if node.name == "startButton" {
+                isStartButton = true
+                break
             }
+            currentNode = node.parent
         }
+        
+        if isStartButton {
+            if readyToStart {
+                print("🎮 Start button clicked!")
+                startRace()
+            } else {
+                print("⚠️ Start button clicked but not ready (need at least 2 players)")
+            }
+            return  // Don't process as slot click
+        }
+        
+        // Ignore other clicks - only shake/keyboard can claim slots
+        // This prevents accidental slot claiming when clicking around
     }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 49:  // Space
+        case 49:  // Space - Start race
             if readyToStart {
                 startRace()
+            } else {
+                print("⚠️ Need at least 2 players to start (use AirPods shake to claim slots)")
             }
 
-        case 36:  // Return
-            // Debug: claim next slot
-            if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-                claimSlot(
-                    playerNumber: nextSlot.playerNumber,
-                    deviceId: "debug_\(nextSlot.playerNumber)",
-                    deviceName: "Debug P\(nextSlot.playerNumber)"
-                )
-            }
+        // REMOVED: Return key claiming - only AirPods shake can claim slots
+        // This prevents keyboard from interfering with player slots
 
         default:
             break
@@ -331,23 +396,30 @@ class LobbyScene: SKScene {
         // Fill remaining slots with CPU
         for i in 1...8 {
             if claimedSlots[i] == nil {
-                if let tracklet = TrackletLoader.shared.randomTracklet() {
-                    let cpuPlayer = Player(
-                        id: "cpu_\(i)",
-                        playerNumber: i,
-                        name: "CPU \(i)",
-                        type: .cpu(trackletId: tracklet.id)
-                    )
-                    players.append(cpuPlayer)
-                }
+                let cpuPlayer = Player(
+                    id: "cpu_\(i)",
+                    playerNumber: i,
+                    name: "CPU \(i)",
+                    type: .cpu
+                )
+                players.append(cpuPlayer)
             }
         }
 
         // Broadcast start message
         MultipeerManager.shared.broadcast(message: .startRace)
 
-        // Transition to race
-        gameCoordinator.startRace(with: players)
+        // Transition to photo capture (then race)
+        gameCoordinator.startPhotoCapture(with: players)
+    }
+}
+
+// MARK: - BluetoothControllerDelegate
+
+extension LobbyScene: BluetoothControllerDelegate {
+    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double) {
+        // Motion updates are handled during the race, not in lobby
+        // In lobby, we only care about shake detection for claiming slots
     }
 }
 

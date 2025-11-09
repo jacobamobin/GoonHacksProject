@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>We need access to your camera to capture player photos for the game avatars.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Microphone access may be needed for camera functionality.</string>
+</dict>
+</plist>

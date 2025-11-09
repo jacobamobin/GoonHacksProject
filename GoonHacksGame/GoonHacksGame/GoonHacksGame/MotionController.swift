@@ -86,9 +86,8 @@ class AirPodsMotionController {
     }
 
     private func processMotion(_ motion: CMDeviceMotion) {
-        let attitude = motion.attitude
+        let gravity = motion.gravity
         let acceleration = motion.userAcceleration
-        let rotationRate = motion.rotationRate
 
         // 1. Check for shake (for registration)
         detectShake(acceleration: acceleration)
@@ -96,33 +95,56 @@ class AirPodsMotionController {
         // 2. Check for boost gesture (quick forward acceleration)
         detectBoost(acceleration: acceleration)
 
-        // 3. Detect stroking speed (up/down motion)
+        // 3. Detect stroking speed (up/down motion from acceleration)
         detectStrokingSpeed(acceleration: acceleration)
 
-        // 4. Process steering from attitude (tilt)
-        processSteering(attitude: attitude)
+        // 4. Process steering from gravity (tilt orientation)
+        processSteering(gravity: gravity)
     }
 
-    private var strokingVelocity: Double = 0.5  // Current speed from stroking
+    // Stroking speed detection (up/down motion)
+    private var strokingVelocity: Double = 0.75  // Start at 0.75x (competitive with medium CPUs)
     private var lastStrokeUpdate: Date = Date()
+    private var recentAccelerations: [Double] = []  // For smoothing
 
     private func detectStrokingSpeed(acceleration: CMAcceleration) {
-        // Y-axis acceleration = up/down motion (stroking)
-        let yAccel = abs(acceleration.y)
+        // STROKING = ANY MOTION IN ANY DIRECTION
+        // Calculate total motion magnitude (shake in any direction counts!)
+        let totalAccel = sqrt(
+            acceleration.x * acceleration.x +
+            acceleration.y * acceleration.y +
+            acceleration.z * acceleration.z
+        )
 
-        // Map acceleration magnitude to speed (0.3 to 1.0)
-        // Higher magnitude = faster stroking = higher speed
-        let speedFromAccel = min(1.0, 0.3 + (yAccel / 2.0))
-
-        // Smooth the velocity with exponential moving average
-        strokingVelocity = strokingVelocity * 0.9 + speedFromAccel * 0.1
-
-        // Send speed update periodically (every 0.1s)
-        let now = Date()
-        if now.timeIntervalSince(lastStrokeUpdate) >= 0.1 {
-            delegate?.didReceiveSpeed(strokingVelocity)
-            lastStrokeUpdate = now
+        // Simple smoothing (keep last 3 readings only for faster response)
+        recentAccelerations.append(totalAccel)
+        if recentAccelerations.count > 3 {
+            recentAccelerations.removeFirst()
         }
+        let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)
+
+        // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
+        // No motion = 0.75x (slower than fast CPUs 1.1x), max shaking = 1.3x
+        let rawSpeed: Double
+        if avgAccel < 0.15 {
+            rawSpeed = 0.75  // At rest = slower than fast CPUs, competitive with medium CPUs
+        } else {
+            // ANY motion adds boost - 0.15G to 0.8G gives 0.75x to 1.3x
+            // 0.15G = start of bonus, 0.8G+ = full 55% bonus (0.75 + 0.55 = 1.3)
+            let bonus = min(0.55, (avgAccel - 0.15) * 0.85)
+            rawSpeed = 0.75 + bonus
+        }
+
+        // Very light smoothing for responsiveness
+        strokingVelocity = strokingVelocity * 0.6 + rawSpeed * 0.4
+
+        // Debug logging (every 60 frames = ~1 second)
+        if Int.random(in: 0..<60) == 0 {
+            print("🏃 ANY MOTION: total=\(String(format: "%.3f", avgAccel))G (x:\(String(format: "%.2f", acceleration.x)) y:\(String(format: "%.2f", acceleration.y)) z:\(String(format: "%.2f", acceleration.z))) → speed=\(String(format: "%.2f", strokingVelocity))x")
+        }
+
+        // Send speed update
+        delegate?.didReceiveSpeed(strokingVelocity)
     }
 
     private func detectShake(acceleration: CMAcceleration) {
@@ -166,27 +188,31 @@ class AirPodsMotionController {
         }
     }
 
-    private func processSteering(attitude: CMAttitude) {
-        // STROKING MOTION: Up/down movement = speed
-        // Left/right tilt = steering
+    private func processSteering(gravity: CMAcceleration) {
+        // STEERING = ONLY TILT ANGLE (not motion/shaking!)
+        // gravity.x shows the tilt: -1 (tilted left) to +1 (tilted right)
 
-        let roll = attitude.roll    // -π to π (left/right tilt)
-        let pitch = attitude.pitch  // -π to π (forward/back tilt)
+        let rawSteerX = gravity.x
 
-        // Lateral steering from roll
-        let deadzone = 0.15
-        var steerX = roll / (.pi / 2)  // Normalize to ±1
+        // Very small dead zone for responsive steering
+        let deadzone = 0.05  // Reduced from 0.08
+        var steerX: Double
 
-        // Apply deadzone
-        if abs(steerX) < deadzone { steerX = 0 }
-
-        // Clamp
-        steerX = max(-1, min(1, steerX))
-
-        // Send steering
-        if steerX != 0 {
-            delegate?.didReceiveSteering(x: steerX, y: 0)  // Only X steering
+        if abs(rawSteerX) < deadzone {
+            steerX = 0.0
+        } else {
+            // Strong amplification for responsive steering
+            steerX = rawSteerX * 3.0  // Increased from 2.0
+            steerX = max(-1.0, min(1.0, steerX))  // Clamp to -1...1
         }
+
+        // Debug logging (every 30 frames = ~0.5 seconds)
+        if Int.random(in: 0..<30) == 0 {
+            print("🎮 TILT STEERING: gravity.x=\(String(format: "%.2f", rawSteerX)) → steer=\(String(format: "%.2f", steerX))")
+        }
+
+        // Always send steering
+        delegate?.didReceiveSteering(x: steerX, y: 0)
     }
 }
 

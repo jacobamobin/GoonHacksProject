@@ -2,7 +2,7 @@
 //  GameModels.swift
 //  GoonHacksGame
 //
-//  Core game models - COMPLETE OVERHAUL for fun gameplay
+//  Core game models - Simple, fun racing without VISEM
 //
 
 import Foundation
@@ -13,7 +13,7 @@ import AppKit
 
 enum PlayerType {
     case human(deviceId: String)
-    case cpu(trackletId: String)
+    case cpu
 }
 
 enum ControlType {
@@ -32,8 +32,8 @@ class Player {
 
     // Motion input state
     var steeringInput: CGVector = .zero  // -1 to 1 in x, y
-    var speedInput: CGFloat = 0.5  // 0 to 1 (stroking speed)
-    var boostInput: Bool = false
+    var speedInput: CGFloat = 1.0  // 0.5 to 1.5 (stroking speed multiplier)
+    var boostActive: Bool = false
     var lastBoostTime: TimeInterval = 0
 
     init(id: String, playerNumber: Int, name: String, type: PlayerType) {
@@ -58,15 +58,16 @@ class Player {
         )
     }
 
-    // Update speed from stroking motion (up/down)
+    // Update speed from stroking motion
     func updateSpeed(_ speed: Double) {
-        speedInput = CGFloat(max(0.0, min(1.0, speed)))
+        // Map 0-1 input to 0.5-1.5 multiplier
+        speedInput = CGFloat(0.5 + speed)  // 0.5x to 1.5x speed
     }
 
     // Trigger boost
-    func triggerBoost(currentTime: TimeInterval, cooldown: TimeInterval = 1.5) -> Bool {
+    func triggerBoost(currentTime: TimeInterval, cooldown: TimeInterval = 2.0) -> Bool {
         if currentTime - lastBoostTime >= cooldown {
-            boostInput = true
+            boostActive = true
             lastBoostTime = currentTime
             return true
         }
@@ -80,186 +81,236 @@ class Racer {
     let player: Player
     var position: CGPoint
     var velocity: CGVector
-    var tracklet: Tracklet?
-    var trackletTime: Double = 0.0
-
-    // Track following
-    var currentSegment: Int = 0
-    var trackPath: [CGPoint] = []
-
-    // Visual
     var rotation: CGFloat = 0
-    var scale: CGFloat = 1.0
+
+    // Physics
+    var baseSpeed: CGFloat = 300.0  // Pixels per second
+    var currentSpeed: CGFloat = 300.0
+    let maxSpeed: CGFloat = 600.0
+    let acceleration: CGFloat = 500.0
+    let friction: CGFloat = 0.95
+
+    // Lane assignment (so players don't overlap!)
+    var laneOffset: CGFloat = 0  // X offset from track centerline
+
+    // CPU AI
+    var cpuTargetPoint: CGPoint?
+    var cpuPersonality: CGFloat = 1.0  // Speed multiplier for CPU
 
     // Race state
     var distanceTraveled: CGFloat = 0
     var lastCheckpointPassed: Int = -1
     var finishTime: TimeInterval?
+    var lap: Int = 1
 
-    // Speed state
-    var baseSpeed: CGFloat = 150.0  // Base forward speed
-    var currentSpeed: CGFloat = 150.0
-
-    init(player: Player, startPosition: CGPoint) {
+    init(player: Player, startPosition: CGPoint, laneOffset: CGFloat = 0) {
         self.player = player
         self.position = startPosition
         self.velocity = .zero
+        self.laneOffset = laneOffset  // Assign lane
 
-        // Assign tracklet for CPU players
-        if case .cpu(let trackletId) = player.type {
-            self.tracklet = TrackletLoader.shared.data?.tracklets.first { $0.id == trackletId }
+        // Give CPUs WIDE speed variation (makes it competitive!)
+        // Some slow (0.7x), some fast (1.1x)
+        if player.isCPU {
+            cpuPersonality = CGFloat.random(in: 0.7...1.1)
+        }
+    }
 
-            // Set CPU speed based on tracklet statistics
-            if let tracklet = tracklet {
-                let speedScale: CGFloat = 200.0  // Scale factor for VISEM speeds
-                baseSpeed = CGFloat(tracklet.statistics.meanSpeed) * speedScale
-                currentSpeed = baseSpeed
+    func update(deltaTime: TimeInterval, trackPath: [CGPoint], allRacers: [Racer]) {
+        let dt = CGFloat(deltaTime)
+
+        if player.isCPU {
+            updateCPU(trackPath: trackPath, dt: dt, allRacers: allRacers)
+        } else {
+            updateHuman(dt: dt, trackPath: trackPath, allRacers: allRacers)
+        }
+
+        // Update position
+        position.x += velocity.dx * dt
+        position.y += velocity.dy * dt
+
+        // Update distance
+        let speed = sqrt(velocity.dx * velocity.dx + velocity.dy * velocity.dy)
+        distanceTraveled += speed * dt
+
+        // Rotation is handled in update methods (auto-follow path)
+    }
+
+    private func updateHuman(dt: CGFloat, trackPath: [CGPoint], allRacers: [Racer]) {
+        // SPAM RACE - STAY ON TRACK, JUST SHAKE TO GO FASTER!
+        // Like sperm racing upward in a narrow channel
+
+        // Speed entirely controlled by stroking (1.0 - 1.5x)
+        var targetSpeed = baseSpeed * player.speedInput
+
+        // RUBBER BANDING - help players who fall behind (like Mario Kart!)
+        let maxY = allRacers.map { $0.position.y }.max() ?? position.y
+        let distanceBehind = maxY - position.y
+
+        if distanceBehind > 500 {
+            // Way behind - big boost
+            targetSpeed *= 1.3
+        } else if distanceBehind > 250 {
+            // Behind - small boost
+            targetSpeed *= 1.15
+        }
+
+        // Boost
+        if player.boostActive {
+            currentSpeed = min(maxSpeed, targetSpeed * 2.0)
+            player.boostActive = false
+        } else {
+            currentSpeed = targetSpeed
+        }
+
+        // TIGHTLY FOLLOW THE TRACK (like on rails!)
+        guard !trackPath.isEmpty else { return }
+
+        // Find current position on track based on Y coordinate
+        var nearestIndex = 0
+        var nearestDistance: CGFloat = .infinity
+
+        for (index, point) in trackPath.enumerated() {
+            let yDist = abs(point.y - position.y)
+            if yDist < nearestDistance {
+                nearestDistance = yDist
+                nearestIndex = index
             }
         }
+
+        // Lock X position to track centerline + lane offset (stay in your lane!)
+        let currentTrackPoint = trackPath[nearestIndex]
+        position.x = currentTrackPoint.x + laneOffset  // Snap to track + lane!
+
+        // Always move FORWARD (upward) along the track
+        let lookAheadIndex = min(nearestIndex + 3, trackPath.count - 1)
+        let targetPoint = trackPath[lookAheadIndex]
+
+        // Face upward along the track
+        let dx = targetPoint.x - currentTrackPoint.x
+        let dy = targetPoint.y - currentTrackPoint.y
+        rotation = atan2(dy, dx) - .pi / 2
+
+        // Move UPWARD with speed (always positive Y direction)
+        velocity.dx = 0  // No horizontal drift
+        velocity.dy = currentSpeed  // Only move upward!
+
+        // Debug logging (occasionally)
+        if Int.random(in: 0..<120) == 0 {
+            print("🏊 P\(player.playerNumber): Y=\(Int(position.y)) X=\(Int(position.x)) speed=\(String(format: "%.2f", currentSpeed)) speedInput=\(String(format: "%.2f", player.speedInput))")
+        }
+
+        // No drag - direct speed control
     }
 
-    // Update physics - SIMPLIFIED AND FIXED
-    func update(deltaTime: TimeInterval, trackPath: [CGPoint], weights: PhysicsWeights) {
-        // 1. Calculate forward movement along track
-        let forwardMovement = calculateForwardMovement(deltaTime: deltaTime, trackPath: trackPath, weights: weights)
+    private func updateCPU(trackPath: [CGPoint], dt: CGFloat, allRacers: [Racer]) {
+        // CPU STAYS ON TRACK (same as human, but different speeds)
+        guard !trackPath.isEmpty else { return }
 
-        // 2. Apply lateral steering
-        let lateralMovement = applyLateralSteering(weights: weights)
+        // RUBBER BANDING for CPUs too (keeps pack together!)
+        let maxY = allRacers.map { $0.position.y }.max() ?? position.y
+        let distanceBehind = maxY - position.y
 
-        // 3. Apply boost
-        if player.boostInput {
-            currentSpeed = baseSpeed * 2.0
-            player.boostInput = false
-        } else {
-            currentSpeed = baseSpeed
+        var rubberBandBoost: CGFloat = 1.0
+        if distanceBehind > 500 {
+            rubberBandBoost = 1.3
+        } else if distanceBehind > 250 {
+            rubberBandBoost = 1.15
         }
 
-        // 4. Update position
-        position = CGPoint(
-            x: position.x + forwardMovement.dx * deltaTime + lateralMovement.dx * deltaTime,
-            y: position.y + forwardMovement.dy * deltaTime + lateralMovement.dy * deltaTime
-        )
+        // Find current position on track based on Y coordinate
+        var nearestIndex = 0
+        var nearestDistance: CGFloat = .infinity
 
-        // 5. Update velocity for rendering
-        velocity = CGVector(
-            dx: forwardMovement.dx + lateralMovement.dx,
-            dy: forwardMovement.dy + lateralMovement.dy
-        )
-
-        // 6. Update rotation
-        if let nextPoint = getNextTrackPoint(trackPath: trackPath) {
-            let dx = nextPoint.x - position.x
-            let dy = nextPoint.y - position.y
-            rotation = atan2(dy, dx)
+        for (index, point) in trackPath.enumerated() {
+            let yDist = abs(point.y - position.y)
+            if yDist < nearestDistance {
+                nearestDistance = yDist
+                nearestIndex = index
+            }
         }
 
-        // 7. Track distance
-        distanceTraveled += currentSpeed * deltaTime
-    }
+        // Lock X position to track centerline + lane offset (stay in your lane!)
+        let currentTrackPoint = trackPath[nearestIndex]
+        position.x = currentTrackPoint.x + laneOffset  // Snap to track + lane!
 
-    private func calculateForwardMovement(deltaTime: TimeInterval, trackPath: [CGPoint], weights: PhysicsWeights) -> CGVector {
-        // Get next point on track
-        guard let nextPoint = getNextTrackPoint(trackPath: trackPath) else {
-            return CGVector(dx: 0, dy: currentSpeed)  // Default: move up
-        }
+        // Always move FORWARD (upward) along the track
+        let lookAheadIndex = min(nearestIndex + 3, trackPath.count - 1)
+        let targetPoint = trackPath[lookAheadIndex]
 
-        // Direction to next point
-        let dx = nextPoint.x - position.x
-        let dy = nextPoint.y - position.y
-        let distance = sqrt(dx * dx + dy * dy)
+        // Face upward along the track
+        let dx = targetPoint.x - currentTrackPoint.x
+        let dy = targetPoint.y - currentTrackPoint.y
+        rotation = atan2(dy, dx) - .pi / 2
 
-        if distance < 10 {
-            // Move to next segment
-            currentSegment = min(currentSegment + 1, trackPath.count - 1)
-        }
+        // CPU SPEED VARIATION (0.7x - 1.1x)
+        let speed = baseSpeed * cpuPersonality * CGFloat.random(in: 0.98...1.02)
 
-        if distance > 0 {
-            // Normalize and apply speed
-            let speedMod = CGFloat(player.speedInput) + 0.5  // 0.5 to 1.5 multiplier
-            let effectiveSpeed = currentSpeed * speedMod
+        // Move UPWARD with speed (always positive Y direction)
+        velocity.dx = 0  // No horizontal drift
+        velocity.dy = speed  // Only move upward!
 
-            return CGVector(
-                dx: (dx / distance) * effectiveSpeed,
-                dy: (dy / distance) * effectiveSpeed
-            )
-        }
-
-        return .zero
-    }
-
-    private func applyLateralSteering(weights: PhysicsWeights) -> CGVector {
-        // Only apply horizontal steering
-        return CGVector(
-            dx: player.steeringInput.dx * weights.steerMultiplier,
-            dy: 0  // No vertical input override - follow track
-        )
-    }
-
-    private func getNextTrackPoint(trackPath: [CGPoint]) -> CGPoint? {
-        guard currentSegment < trackPath.count else { return nil }
-        return trackPath[currentSegment]
+        // No drag - direct speed control
     }
 }
 
-// MARK: - Physics Configuration
+// MARK: - Track Generation
 
-struct PhysicsWeights {
-    var maxSpeed: CGFloat = 300.0
-    var steerMultiplier: CGFloat = 150.0  // Lateral steering strength
-    var baseForwardSpeed: CGFloat = 200.0  // Default forward speed
+struct TrackPoint {
+    var position: CGPoint
+    var width: CGFloat
 }
-
-// MARK: - Track Generator (Dynamic curved track)
 
 class TrackGenerator {
-    static func generateCurvedTrack(
-        width: CGFloat,
-        height: CGFloat,
-        segments: Int,
-        curveIntensity: CGFloat
-    ) -> [CGPoint] {
-        var points: [CGPoint] = []
-        let segmentHeight = height / CGFloat(segments)
+    static func generateRacingTrack(length: CGFloat, width: CGFloat) -> [TrackPoint] {
+        var points: [TrackPoint] = []
+
+        let segmentCount = 150  // Smooth fluid path
+        let segmentHeight = length / CGFloat(segmentCount)
 
         var currentX: CGFloat = 0
-        var currentY: CGFloat = 0
+        var currentWidth = width
 
-        for i in 0...segments {
-            let y = currentY
+        for i in 0...segmentCount {
+            let y = CGFloat(i) * segmentHeight
+            let t = CGFloat(i) / CGFloat(segmentCount)  // 0 to 1
 
-            // Add curves using sine wave
-            let frequency: CGFloat = 0.3
-            let amplitude = width * curveIntensity
-            let phase = CGFloat(i) * frequency
+            // SMOOTH WAVY PATH - like swimming through fluid
+            // Gentle curves that everyone auto-follows
+            let wave1 = sin(t * 5.0) * 250           // Main wave pattern
+            let wave2 = cos(t * 8.0 + 1.0) * 150     // Secondary wave
+            let wave3 = sin(t * 12.0 + 3.0) * 80     // Small variation
 
-            let x = sin(phase) * amplitude
+            currentX = wave1 + wave2 + wave3
 
-            points.append(CGPoint(x: x, y: y))
+            // Consistent width (simpler track)
+            currentWidth = width
 
-            currentY += segmentHeight
+            points.append(TrackPoint(position: CGPoint(x: currentX, y: y), width: currentWidth))
         }
 
         return points
     }
 
-    static func generateObstacles(alongPath path: [CGPoint], count: Int) -> [CGRect] {
+    static func generateObstacles(along trackPoints: [TrackPoint], count: Int) -> [CGRect] {
         var obstacles: [CGRect] = []
 
-        let step = path.count / count
+        guard trackPoints.count > count else { return [] }
 
         for i in 0..<count {
-            let index = min(i * step, path.count - 1)
-            let point = path[index]
+            let index = (trackPoints.count / count) * i + Int.random(in: 0...10)
+            guard index < trackPoints.count else { continue }
 
-            let obstacleWidth: CGFloat = CGFloat.random(in: 40...80)
-            let obstacleHeight: CGFloat = CGFloat.random(in: 30...60)
+            let point = trackPoints[index]
+            let obstacleWidth = CGFloat.random(in: 40...80)
+            let obstacleHeight = CGFloat.random(in: 40...80)
 
-            // Offset to sides
-            let xOffset = CGFloat.random(in: -200...200)
+            // Random position within track width
+            let offsetX = CGFloat.random(in: -point.width/3...point.width/3)
 
             let obstacle = CGRect(
-                x: point.x + xOffset - obstacleWidth / 2,
-                y: point.y - obstacleHeight / 2,
+                x: point.position.x + offsetX - obstacleWidth/2,
+                y: point.position.y - obstacleHeight/2,
                 width: obstacleWidth,
                 height: obstacleHeight
             )
@@ -275,17 +326,9 @@ class TrackGenerator {
 
 struct Checkpoint {
     let id: Int
-    let position: CGPoint  // Position on track
+    let position: CGPoint
     let width: CGFloat
-    var racersPassed: Set<String> = []
-
-    func contains(position: CGPoint) -> Bool {
-        let distance = sqrt(
-            pow(position.x - self.position.x, 2) +
-            pow(position.y - self.position.y, 2)
-        )
-        return distance < 50  // Within 50 points
-    }
+    var passed: Bool = false
 }
 
 // MARK: - Game State
@@ -302,96 +345,90 @@ class GameState {
     var players: [Player] = []
     var racers: [Racer] = []
     var checkpoints: [Checkpoint] = []
-    var trackPath: [CGPoint] = []
+    var trackPoints: [TrackPoint] = []
     var obstacles: [CGRect] = []
-    var currentCheckpoint: Int = 0
+
     var raceStartTime: TimeInterval = 0
     var currentTime: TimeInterval = 0
 
-    // Add player (up to 8)
-    func addPlayer(_ player: Player) -> Bool {
-        guard players.count < 8 else { return false }
+    let trackLength: CGFloat = 30000  // MUCH longer track for ~90s total race
+    let trackWidth: CGFloat = 500  // Slightly narrower for tighter racing
+
+    func addPlayer(_ player: Player) {
         players.append(player)
-        return true
     }
 
-    // Fill remaining slots with CPU players
-    func fillWithCPU() {
-        while players.count < 8 {
-            guard let tracklet = TrackletLoader.shared.randomTracklet() else { break }
+    func initializeRace() {
+        // Generate track
+        trackPoints = TrackGenerator.generateRacingTrack(length: trackLength, width: trackWidth)
 
-            let cpuPlayer = Player(
-                id: UUID().uuidString,
-                playerNumber: players.count + 1,
-                name: "CPU \(players.count + 1)",
-                type: .cpu(trackletId: tracklet.id)
-            )
-            players.append(cpuPlayer)
-        }
-    }
+        // NO OBSTACLES - removed for cleaner racing!
+        obstacles = []
 
-    // Initialize racers at start positions
-    func initializeRacers(trackPath: [CGPoint]) {
-        self.trackPath = trackPath
-        racers.removeAll()
+        // Create racers at starting line - SEPARATE LANES so they don't overlap!
+        let startY: CGFloat = 100
+        let startTrackPoint = trackPoints.first ?? TrackPoint(position: .zero, width: trackWidth)
 
-        guard let startPoint = trackPath.first else { return }
+        // Assign each racer to a lane (horizontal offset)
+        let laneWidth: CGFloat = 45  // Space between racers
+        let totalLaneWidth = CGFloat(players.count - 1) * laneWidth
+        let startLaneOffset = -totalLaneWidth / 2
 
         for (index, player) in players.enumerated() {
-            let xOffset = (CGFloat(index) - 3.5) * 60  // Spread across start line
-            let racer = Racer(
-                player: player,
-                startPosition: CGPoint(x: startPoint.x + xOffset, y: startPoint.y)
+            // Each racer gets their own lane offset from center
+            let laneOffset = startLaneOffset + CGFloat(index) * laneWidth
+
+            // Start at track centerline + lane offset
+            let startPos = CGPoint(
+                x: startTrackPoint.position.x + laneOffset,
+                y: startY
             )
-            racer.trackPath = trackPath
+
+            let racer = Racer(player: player, startPosition: startPos, laneOffset: laneOffset)
             racers.append(racer)
+
+            print("🏁 P\(player.playerNumber) assigned lane \(index + 1) (offset: \(Int(laneOffset)))")
         }
+
+        // Checkpoints ~30 SECONDS APART (baseSpeed 300 * 30s = 9000 units)
+        // For 30000 length = 3 checkpoints (at ~10k, ~20k, ~30k)
+        let checkpointInterval: CGFloat = 10000  // ~30 seconds at base speed
+        for i in 0..<2 {
+            let y = checkpointInterval * CGFloat(i + 1)
+            let checkpoint = Checkpoint(id: i, position: CGPoint(x: 0, y: y), width: trackWidth)
+            checkpoints.append(checkpoint)
+        }
+
+        // Finish line at end
+        checkpoints.append(Checkpoint(id: 2, position: CGPoint(x: 0, y: trackLength), width: trackWidth))
     }
 
-    // Check checkpoint crossing
+    func activeRacers() -> [Racer] {
+        return racers.filter { !$0.player.isEliminated }
+    }
+
     func checkCheckpoints() -> [Player]? {
-        guard currentCheckpoint < checkpoints.count else { return nil }
+        var eliminated: [Player] = []
 
-        let checkpoint = checkpoints[currentCheckpoint]
-        var newPasses: [Player] = []
+        for checkpoint in checkpoints where !checkpoint.passed {
+            let racersAtCheckpoint = activeRacers().filter { racer in
+                racer.position.y >= checkpoint.position.y && racer.lastCheckpointPassed < checkpoint.id
+            }
 
-        for racer in racers where !racer.player.isEliminated {
-            if checkpoint.contains(position: racer.position) &&
-               !checkpoint.racersPassed.contains(racer.player.id) {
-                checkpoints[currentCheckpoint].racersPassed.insert(racer.player.id)
-                newPasses.append(racer.player)
-                racer.lastCheckpointPassed = currentCheckpoint
+            if !racersAtCheckpoint.isEmpty {
+                // Mark checkpoint as passed for these racers
+                for racer in racersAtCheckpoint {
+                    racer.lastCheckpointPassed = checkpoint.id
+                }
+
+                // Find last place racer
+                if let lastPlace = activeRacers().min(by: { $0.position.y < $1.position.y }) {
+                    lastPlace.player.isEliminated = true
+                    eliminated.append(lastPlace.player)
+                }
             }
         }
 
-        // Check if all active racers passed
-        let activeRacers = racers.filter { !$0.player.isEliminated }
-        if checkpoint.racersPassed.count >= activeRacers.count {
-            return eliminateLastPlace()
-        }
-
-        return nil
-    }
-
-    // Eliminate last racer at checkpoint
-    private func eliminateLastPlace() -> [Player] {
-        let activeRacers = racers.filter { !$0.player.isEliminated }
-
-        // Sort by distance traveled
-        let sorted = activeRacers.sorted { $0.distanceTraveled > $1.distanceTraveled }
-
-        // Eliminate last player
-        if let lastPlace = sorted.last {
-            lastPlace.player.isEliminated = true
-            currentCheckpoint += 1
-            return [lastPlace.player]
-        }
-
-        return []
-    }
-
-    // Get active (non-eliminated) racers
-    func activeRacers() -> [Racer] {
-        return racers.filter { !$0.player.isEliminated }
+        return eliminated.isEmpty ? nil : eliminated
     }
 }

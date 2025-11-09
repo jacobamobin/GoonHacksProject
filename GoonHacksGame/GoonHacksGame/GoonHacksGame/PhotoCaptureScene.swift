@@ -18,7 +18,7 @@ class PhotoCaptureScene: SKScene {
     var players: [Player] = []
 
     private var currentPlayerIndex = 0
-    private var capturedPhotos: [UUID: NSImage] = [:]
+    private var capturedPhotos: [String: NSImage] = [:]
 
     // Camera
     private var captureSession: AVCaptureSession?
@@ -156,6 +156,20 @@ class PhotoCaptureScene: SKScene {
     }
 
     private func setupCamera() {
+        // Request camera permission first
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            DispatchQueue.main.async {
+                if granted {
+                    self?.startCamera()
+                } else {
+                    print("❌ Camera permission denied")
+                    self?.statusLabel.text = "❌ Camera permission denied - Press S to skip"
+                }
+            }
+        }
+    }
+
+    private func startCamera() {
         captureSession = AVCaptureSession()
         guard let captureSession = captureSession else { return }
 

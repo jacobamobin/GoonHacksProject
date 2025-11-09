@@ -12,6 +12,7 @@ class GameCoordinator {
 
     private var currentScene: SKScene?
     private var lobbyScene: LobbyScene?
+    private var photoCaptureScene: PhotoCaptureScene?
     private var raceScene: RaceGameScene?
 
     // Motion controllers per player
@@ -39,6 +40,35 @@ class GameCoordinator {
         MultipeerManager.shared.delegate = lobbyScene
 
         print("✅ Lobby scene loaded")
+    }
+
+    func startPhotoCapture(with players: [Player]) {
+        guard let view = view else { return }
+
+        // Check if there are any human players
+        let humanPlayers = players.filter { !$0.isCPU }
+
+        if humanPlayers.isEmpty {
+            // No human players, skip photo capture and go straight to race
+            print("⚠️ No human players, skipping photo capture")
+            startRace(with: players)
+            return
+        }
+
+        print("📸 Transitioning to photo capture for \(humanPlayers.count) players")
+
+        // Create photo capture scene
+        photoCaptureScene = PhotoCaptureScene(size: CGSize(width: 1920, height: 1080))
+        photoCaptureScene?.gameCoordinator = self
+        photoCaptureScene?.scaleMode = .aspectFit
+        photoCaptureScene?.players = players
+
+        // Transition
+        let transition = SKTransition.fade(withDuration: 0.5)
+        view.presentScene(photoCaptureScene!, transition: transition)
+        currentScene = photoCaptureScene
+
+        print("✅ Photo capture scene loaded")
     }
 
     func startRace(with players: [Player]) {
