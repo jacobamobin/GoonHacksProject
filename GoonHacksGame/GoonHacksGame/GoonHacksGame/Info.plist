@@ -2,9 +2,44 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+
+	<key>CFBundleDisplayName</key>
+	<string>GoonHacksGame</string>
+
+	<!-- Privacy / Usage strings (required for runtime permission prompts) -->
 	<key>NSCameraUsageDescription</key>
-	<string>We need access to your camera to capture player photos for the game avatars.</string>
+	<string>We need to access your camera to take photos for player avatars.</string>
+
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>We need access to your photos to select player avatars.</string>
+
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Microphone access may be needed for camera functionality.</string>
+
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>We need Bluetooth access to connect AirPods for motion control.</string>
+
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>We need Bluetooth access to connect AirPods for motion control.</string>
+
+	<key>NSMotionUsageDescription</key>
+	<string>We need motion access to enable AirPods motion control.</string>
+
+	<key>NSAppleMusicUsageDescription</key>
+	<string>We use media library access as part of camera functionality.</string>
+
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We need location services for game functionality.</string>
+
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>We need location services for game functionality.</string>
+
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+		<string>gamekit</string>
+	</array>
 </dict>
 </plist>

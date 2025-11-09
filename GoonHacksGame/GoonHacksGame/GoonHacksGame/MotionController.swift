@@ -15,6 +15,7 @@ import Combine
 protocol MotionControllerDelegate: AnyObject {
     func didReceiveSteering(x: Double, y: Double)
     func didReceiveSpeed(_ speed: Double)  // Stroking speed
+    func didReceiveSPM(_ spm: Double)  // Strokes per minute
     func didDetectBoost()
     func didDetectShake()  // For player registration
 }
@@ -107,14 +108,15 @@ class AirPodsMotionController {
     private var lastStrokeUpdate: Date = Date()
     private var recentAccelerations: [Double] = []  // For smoothing
 
+    // SPM (Strokes Per Minute) tracking
+    private var strokeTimestamps: [Date] = []  // Last 10 stroke peaks
+    private var lastPeakTime: Date = Date()
+    private var wasAboveThreshold = false
+
     private func detectStrokingSpeed(acceleration: CMAcceleration) {
-        // STROKING = ANY MOTION IN ANY DIRECTION
-        // Calculate total motion magnitude (shake in any direction counts!)
-        let totalAccel = sqrt(
-            acceleration.x * acceleration.x +
-            acceleration.y * acceleration.y +
-            acceleration.z * acceleration.z
-        )
+        // STROKING = UP/DOWN MOTION ONLY
+        // Only use Y-axis acceleration for stroking motion
+        let totalAccel = abs(acceleration.y)
 
         // Simple smoothing (keep last 3 readings only for faster response)
         recentAccelerations.append(totalAccel)
@@ -122,6 +124,39 @@ class AirPodsMotionController {
             recentAccelerations.removeFirst()
         }
         let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)
+
+        // PEAK DETECTION for SPM (Strokes Per Minute)
+        let peakThreshold = 0.2  // Lowered from 0.3G - motion above this counts as a stroke
+        let now = Date()
+
+        // Detect rising edge (crossing threshold)
+        if avgAccel >= peakThreshold && !wasAboveThreshold {
+            // New stroke detected!
+            wasAboveThreshold = true
+
+            // Debounce - ignore peaks within 0.1s of last peak
+            if now.timeIntervalSince(lastPeakTime) > 0.1 {
+                strokeTimestamps.append(now)
+                lastPeakTime = now
+
+                // Keep only last 20 strokes
+                if strokeTimestamps.count > 20 {
+                    strokeTimestamps.removeFirst()
+                }
+
+                // Calculate SPM from recent strokes and send to delegate
+                if strokeTimestamps.count >= 2 {
+                    let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
+                    if timeWindow > 0 {
+                        let spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
+                        // Send SPM to delegate (MotionController will update players)
+                        delegate?.didReceiveSPM(spm)
+                    }
+                }
+            }
+        } else if avgAccel < peakThreshold {
+            wasAboveThreshold = false
+        }
 
         // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
         // No motion = 0.75x (slower than fast CPUs 1.1x), max shaking = 1.3x
@@ -140,7 +175,19 @@ class AirPodsMotionController {
 
         // Debug logging (every 60 frames = ~1 second)
         if Int.random(in: 0..<60) == 0 {
-            print("🏃 ANY MOTION: total=\(String(format: "%.3f", avgAccel))G (x:\(String(format: "%.2f", acceleration.x)) y:\(String(format: "%.2f", acceleration.y)) z:\(String(format: "%.2f", acceleration.z))) → speed=\(String(format: "%.2f", strokingVelocity))x")
+            // Calculate SPM for logging
+            let spm: Double
+            if strokeTimestamps.count >= 2 {
+                let timeWindow = now.timeIntervalSince(strokeTimestamps.first!)
+                if timeWindow > 0 {
+                    spm = Double(strokeTimestamps.count - 1) / timeWindow * 60.0
+                } else {
+                    spm = 0
+                }
+            } else {
+                spm = 0
+            }
+            print("🏃 ANY MOTION: total=\(String(format: "%.3f", avgAccel))G → speed=\(String(format: "%.2f", strokingVelocity))x, SPM=\(Int(spm))")
         }
 
         // Send speed update
@@ -346,7 +393,8 @@ class MotionController: MotionControllerDelegate {
     private var airPodsController: AirPodsMotionController?
     private var iPhoneController: iPhoneMotionController?
 
-    var player: Player?  // Associated player
+    var player: Player?  // Primary player (for backwards compatibility)
+    var players: [Player] = []  // All players controlled by this device (co-op mode!)
 
     // Network throttling
     private var lastNetworkUpdate: Date = Date()
@@ -391,54 +439,86 @@ class MotionController: MotionControllerDelegate {
     // MARK: - MotionControllerDelegate
 
     func didReceiveSteering(x: Double, y: Double) {
-        guard let player = player else { return }
+        // Update ALL players controlled by this device (co-op mode!)
+        let allPlayers = players.isEmpty ? (player.map { [$0] } ?? []) : players
+        guard !allPlayers.isEmpty else { return }
 
-        // Update local player
-        player.updateSteering(x: x, y: y)
+        // Update all local players
+        for p in allPlayers {
+            p.updateSteering(x: x, y: y)
+        }
 
-        // Send to network (throttled)
+        // Send to network (throttled) - only send first player's number
         let now = Date()
         if now.timeIntervalSince(lastNetworkUpdate) >= networkUpdateInterval {
-            MultipeerManager.shared.broadcast(
-                message: .motionUpdate(
-                    playerNumber: player.playerNumber,
-                    steerX: x,
-                    steerY: y,
-                    boost: false
+            if let firstPlayer = allPlayers.first {
+                MultipeerManager.shared.broadcast(
+                    message: .motionUpdate(
+                        playerNumber: firstPlayer.playerNumber,
+                        steerX: x,
+                        steerY: y,
+                        boost: false
+                    )
                 )
-            )
+            }
             lastNetworkUpdate = now
         }
     }
 
     func didReceiveSpeed(_ speed: Double) {
-        guard let player = player else { return }
+        // Update ALL players controlled by this device (co-op mode!)
+        let allPlayers = players.isEmpty ? (player.map { [$0] } ?? []) : players
+        guard !allPlayers.isEmpty else { return }
 
-        // Update player speed from stroking motion
-        player.updateSpeed(speed)
+        // Update all players' speed from stroking motion
+        for p in allPlayers {
+            p.updateSpeed(speed)
+        }
 
         // Optionally log for debugging
         if Int.random(in: 0..<100) == 0 {  // 1% of the time
-            print("🏃 Stroking speed: \(String(format: "%.2f", speed)) for P\(player.playerNumber)")
+            let playerNumbers = allPlayers.map { "P\($0.playerNumber)" }.joined(separator: ", ")
+            print("🏃 Stroking speed: \(String(format: "%.2f", speed)) for \(playerNumbers)")
+        }
+    }
+
+    func didReceiveSPM(_ spm: Double) {
+        // Update ALL players controlled by this device (co-op mode!)
+        let allPlayers = players.isEmpty ? (player.map { [$0] } ?? []) : players
+        guard !allPlayers.isEmpty else { return }
+
+        // Update all players' SPM
+        for p in allPlayers {
+            p.strokesPerMinute = spm
         }
     }
 
     func didDetectBoost() {
-        guard let player = player else { return }
+        // Update ALL players controlled by this device (co-op mode!)
+        let allPlayers = players.isEmpty ? (player.map { [$0] } ?? []) : players
+        guard !allPlayers.isEmpty else { return }
 
-        // Trigger boost with current game time
-        _ = player.triggerBoost(currentTime: Date().timeIntervalSince1970)
-        print("💨 Boost! P\(player.playerNumber)")
+        let currentTime = Date().timeIntervalSince1970
 
-        // Send boost to network immediately
-        MultipeerManager.shared.broadcast(
-            message: .motionUpdate(
-                playerNumber: player.playerNumber,
-                steerX: player.steeringInput.dx,
-                steerY: player.steeringInput.dy,
-                boost: true
+        // Trigger boost for all players
+        for p in allPlayers {
+            _ = p.triggerBoost(currentTime: currentTime)
+        }
+
+        let playerNumbers = allPlayers.map { "P\($0.playerNumber)" }.joined(separator: ", ")
+        print("💨 Boost! \(playerNumbers)")
+
+        // Send boost to network immediately (only for first player)
+        if let firstPlayer = allPlayers.first {
+            MultipeerManager.shared.broadcast(
+                message: .motionUpdate(
+                    playerNumber: firstPlayer.playerNumber,
+                    steerX: firstPlayer.steeringInput.dx,
+                    steerY: firstPlayer.steeringInput.dy,
+                    boost: true
+                )
             )
-        )
+        }
     }
 
     func didDetectShake() {

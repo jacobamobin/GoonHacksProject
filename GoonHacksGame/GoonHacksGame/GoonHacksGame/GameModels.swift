@@ -32,9 +32,12 @@ class Player {
 
     // Motion input state
     var steeringInput: CGVector = .zero  // -1 to 1 in x, y
-    var speedInput: CGFloat = 1.0  // 0.5 to 1.5 (stroking speed multiplier)
+    var speedInput: CGFloat = 0.75  // 0.75 to 1.3 (stroking speed multiplier, starts at 0.75x)
     var boostActive: Bool = false
     var lastBoostTime: TimeInterval = 0
+
+    // Performance metrics
+    var strokesPerMinute: Double = 0.0  // SPM - strokes per minute
 
     init(id: String, playerNumber: Int, name: String, type: PlayerType) {
         self.id = id
@@ -109,10 +112,11 @@ class Racer {
         self.velocity = .zero
         self.laneOffset = laneOffset  // Assign lane
 
-        // Give CPUs WIDE speed variation (makes it competitive!)
-        // Some slow (0.7x), some fast (1.1x)
+        // Make CPUs beatable but still competitive
+        // CPU speed range: minimum = player idle speed (0.75x), max = 1.0x
+        // Players can easily beat CPUs by shaking (up to 1.3x)
         if player.isCPU {
-            cpuPersonality = CGFloat.random(in: 0.7...1.1)
+            cpuPersonality = CGFloat.random(in: 0.75...1.0)  // Never faster than base speed
         }
     }
 
@@ -207,15 +211,32 @@ class Racer {
         // CPU STAYS ON TRACK (same as human, but different speeds)
         guard !trackPath.isEmpty else { return }
 
-        // RUBBER BANDING for CPUs too (keeps pack together!)
+        // Find human players and leader
+        let humanRacers = allRacers.filter { !$0.player.isCPU }
         let maxY = allRacers.map { $0.position.y }.max() ?? position.y
-        let distanceBehind = maxY - position.y
+        let slowestHumanY = humanRacers.map { $0.position.y }.min() ?? position.y
 
-        var rubberBandBoost: CGFloat = 1.0
-        if distanceBehind > 500 {
-            rubberBandBoost = 1.3
-        } else if distanceBehind > 250 {
-            rubberBandBoost = 1.15
+        // CPUs ALWAYS STAY BEHIND SLOWEST HUMAN (but never off-screen)
+        let distanceBehind = maxY - position.y
+        let distanceAheadOfSlowestHuman = position.y - slowestHumanY
+
+        var speedMultiplier: CGFloat = 1.0
+
+        // Priority 1: Never pass the slowest human player
+        if !humanRacers.isEmpty && distanceAheadOfSlowestHuman > 0 {
+            // We're ahead of slowest human - SLOW DOWN dramatically
+            speedMultiplier = 0.5  // Cut speed in half
+        }
+        // Priority 2: Don't fall too far behind (off-screen = 600+ units)
+        else if distanceBehind > 600 {
+            // Way behind - speed up to stay on screen
+            speedMultiplier = 1.4
+        } else if distanceBehind > 400 {
+            // Getting far - moderate boost
+            speedMultiplier = 1.2
+        } else if distanceBehind > 200 {
+            // Slightly behind - small boost
+            speedMultiplier = 1.1
         }
 
         // Find current position on track based on Y coordinate
@@ -243,8 +264,8 @@ class Racer {
         let dy = targetPoint.y - currentTrackPoint.y
         rotation = atan2(dy, dx) - .pi / 2
 
-        // CPU SPEED VARIATION (0.7x - 1.1x)
-        let speed = baseSpeed * cpuPersonality * CGFloat.random(in: 0.98...1.02)
+        // CPU SPEED: personality variation + rubber banding
+        let speed = baseSpeed * cpuPersonality * speedMultiplier * CGFloat.random(in: 0.98...1.02)
 
         // Move UPWARD with speed (always positive Y direction)
         velocity.dx = 0  // No horizontal drift
@@ -348,7 +369,7 @@ class GameState {
     var trackPoints: [TrackPoint] = []
     var obstacles: [CGRect] = []
 
-    var raceStartTime: TimeInterval = 0
+    var raceStartTime: TimeInterval? = nil
     var currentTime: TimeInterval = 0
 
     let trackLength: CGFloat = 30000  // MUCH longer track for ~90s total race

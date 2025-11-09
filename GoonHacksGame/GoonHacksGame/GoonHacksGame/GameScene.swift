@@ -7,8 +7,13 @@
 
 import SpriteKit
 import GameplayKit
+import AVFoundation
 
 class GameScene: SKScene {
+    
+    // Camera capture properties
+    private var captureSession: AVCaptureSession?
+    private var photoOutput: AVCapturePhotoOutput?
     
     var entities = [GKEntity]()
     var graphs = [String : GKGraph]()
@@ -40,8 +45,81 @@ class GameScene: SKScene {
                                               SKAction.fadeOut(withDuration: 0.5),
                                               SKAction.removeFromParent()]))
         }
+        
+        // Center the window (macOS)
+        self.view?.window?.center()
+
+        // Prepare camera capture
+        setupCameraIfNeeded()
     }
     
+    // MARK: - Camera Setup & Capture
+    private func setupCameraIfNeeded() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            setupCaptureSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.setupCaptureSession()
+                    } else {
+                        self?.showCameraDeniedLabel()
+                    }
+                }
+            }
+        default:
+            showCameraDeniedLabel()
+        }
+    }
+
+    private func setupCaptureSession() {
+        let session = AVCaptureSession()
+        session.beginConfiguration()
+        session.sessionPreset = .photo
+
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device) else {
+            showCameraDeniedLabel()
+            return
+        }
+        if session.canAddInput(input) { session.addInput(input) }
+
+        let output = AVCapturePhotoOutput()
+        if session.canAddOutput(output) { session.addOutput(output) }
+
+        session.commitConfiguration()
+        self.captureSession = session
+        self.photoOutput = output
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak session] in
+            session?.startRunning()
+        }
+    }
+
+    private func showCameraDeniedLabel() {
+        let warn = SKLabelNode(text: "Camera access denied")
+        warn.fontSize = 18
+        warn.fontColor = .red
+        warn.position = CGPoint(x: self.size.width/2, y: self.size.height/2)
+        warn.zPosition = 999
+        addChild(warn)
+        warn.run(SKAction.sequence([
+            SKAction.fadeIn(withDuration: 0.2),
+            SKAction.wait(forDuration: 2.0),
+            SKAction.fadeOut(withDuration: 0.4),
+            SKAction.removeFromParent()
+        ]))
+    }
+
+    private func capturePhoto() {
+        guard let photoOutput = self.photoOutput else {
+            showCameraDeniedLabel()
+            return
+        }
+        let settings = AVCapturePhotoSettings()
+        photoOutput.capturePhoto(with: settings, delegate: self)
+    }
     
     func touchDown(atPoint pos : CGPoint) {
         if let n = self.spinnyNode?.copy() as! SKShapeNode? {
@@ -85,6 +163,9 @@ class GameScene: SKScene {
             if let label = self.label {
                 label.run(SKAction.init(named: "Pulse")!, withKey: "fadeInOut")
             }
+        case 1: // 'S' key on macOS key map
+            capturePhoto()
+            return
         default:
             print("keyDown: \(event.characters!) keyCode: \(event.keyCode)")
         }
@@ -108,5 +189,31 @@ class GameScene: SKScene {
         }
         
         self.lastUpdateTime = currentTime
+    }
+}
+
+extension GameScene: AVCapturePhotoCaptureDelegate {
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        if let error = error {
+            print("Photo capture error: \(error)")
+            return
+        }
+        guard let data = photo.fileDataRepresentation(), let image = NSImage(data: data) else {
+            print("Failed to get image data")
+            return
+        }
+        // Provide quick feedback in-scene
+        let saved = SKLabelNode(text: "Photo captured")
+        saved.fontSize = 16
+        saved.fontColor = .white
+        saved.position = CGPoint(x: self.size.width/2, y: self.size.height * 0.8)
+        addChild(saved)
+        saved.run(SKAction.sequence([
+            SKAction.fadeIn(withDuration: 0.1),
+            SKAction.wait(forDuration: 1.0),
+            SKAction.fadeOut(withDuration: 0.4),
+            SKAction.removeFromParent()
+        ]))
+        // TODO: Save `image` to disk or use it as needed
     }
 }

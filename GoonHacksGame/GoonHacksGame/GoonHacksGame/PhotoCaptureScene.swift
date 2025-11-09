@@ -22,7 +22,6 @@ class PhotoCaptureScene: SKScene {
 
     // Camera
     private var captureSession: AVCaptureSession?
-    private var previewLayer: AVCaptureVideoPreviewLayer?
     private var videoOutput: AVCaptureVideoDataOutput?
 
     // Face detection
@@ -196,13 +195,9 @@ class PhotoCaptureScene: SKScene {
                 captureSession.addOutput(videoOutput)
             }
 
-            // Create preview layer and add to view
-            if let view = view {
-                previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-                previewLayer?.frame = view.bounds
-                previewLayer?.videoGravity = .resizeAspectFill
-                view.layer?.insertSublayer(previewLayer!, at: 0)
-            }
+            // Note: intentionally do NOT create or add a preview layer.
+            // The app will capture frames in the background and perform face detection
+            // without showing a camera preview on-screen.
 
             // Start session
             DispatchQueue.global(qos: .userInitiated).async {
@@ -218,9 +213,9 @@ class PhotoCaptureScene: SKScene {
 
     private func stopCamera() {
         captureSession?.stopRunning()
-        previewLayer?.removeFromSuperlayer()
+        // No preview layer to remove (we don't add one)
         captureSession = nil
-        previewLayer = nil
+        // keep previewLayer removed
     }
 
     // MARK: - Face Detection
@@ -277,13 +272,9 @@ class PhotoCaptureScene: SKScene {
     // MARK: - Photo Capture
 
     private func capturePhoto() {
-        guard let previewLayer = previewLayer else { return }
-
-        // Get current frame as image
-        guard let connection = previewLayer.connection,
-              let output = videoOutput,
-              let sampleBuffer = output.connection(with: .video)?.videoOrientation != nil ? getLastSampleBuffer() : nil else {
-            print("❌ Failed to capture photo")
+        // Use the most recent sample buffer captured by the video output.
+        guard let sampleBuffer = getLastSampleBuffer() else {
+            print("❌ Failed to capture photo: no sample buffer available")
             moveToNextPlayer()
             return
         }

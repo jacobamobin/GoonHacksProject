@@ -41,11 +41,22 @@ class BluetoothControllerManager: NSObject, ObservableObject {
     // Delegate for motion updates
     weak var delegate: BluetoothControllerDelegate?
 
-    // CoreMotion managers (one per device if possible)
+    // Motion manager for iOS/iPadOS, not available on macOS
     #if !os(macOS)
-    private var primaryMotionManager: CMMotionManager?
+    private let motionManager = CMMotionManager()
     #endif
-    private var headphoneManagers: [CMHeadphoneMotionManager] = []
+
+    // Per-side SPM/smoothing state
+    private var leftRecentAccels: [Double] = []
+    private var rightRecentAccels: [Double] = []
+    private var leftStrokeTimestamps: [Date] = []
+    private var rightStrokeTimestamps: [Date] = []
+    private var leftWasAboveThreshold: Bool = false
+    private var rightWasAboveThreshold: Bool = false
+    private var leftLastPeak: Date = Date()
+    private var rightLastPeak: Date = Date()
+    private var leftSmoothedSpeed: Double = 0.75
+    private var rightSmoothedSpeed: Double = 0.75
 
     // Bluetooth central for device discovery
     private var centralManager: CBCentralManager?
@@ -69,7 +80,7 @@ class BluetoothControllerManager: NSObject, ObservableObject {
         print("🔍 Starting Bluetooth device discovery...")
 
         // Try to connect to available headphone motion
-        if #available(macOS 11.0, iOS 14.0, *) {
+        if #available(iOS 14.0, *) {
             connectToAvailableHeadphones()
         }
 
@@ -84,82 +95,167 @@ class BluetoothControllerManager: NSObject, ObservableObject {
         print("⏹ Stopped Bluetooth discovery")
     }
 
-    @available(macOS 11.0, iOS 14.0, *)
+    // MARK: - Headphone / Accelerometer setup
+
+    // We use accelerometer/device motion on iOS. On macOS a stub is used.
+    @available(iOS 14.0, *)
     private func connectToAvailableHeadphones() {
-        // Create motion manager for primary AirPods
-        let manager = CMHeadphoneMotionManager()
+        #if os(macOS)
+        print("⚠️ Motion control not available on macOS")
+        return
+        #else
+        // Check accelerometer availability on iOS devices
+        guard motionManager.isAccelerometerAvailable else {
+            print("⚠️ Accelerometer not available")
+            return
+        }
 
-        if manager.isDeviceMotionAvailable {
-            let deviceId = "airpods_primary"
-            let device = ControllerDevice(id: deviceId, name: "AirPods")
+        // Avoid adding duplicate device entries
+        if devices.first(where: { $0.id == "airpod_left" }) == nil {
+            devices.append(ControllerDevice(id: "airpod_left", name: "AirPod L"))
+        }
+        if devices.first(where: { $0.id == "airpod_right" }) == nil {
+            devices.append(ControllerDevice(id: "airpod_right", name: "AirPod R"))
+        }
 
-            // Motion smoothing buffers (captured in closure)
-            var recentAccels: [Double] = []
-            var smoothedSpeed: Double = 1.0  // Start at 1.0 (normal speed)
+        motionManager.accelerometerUpdateInterval = 1.0 / 60.0  // 60Hz updates
 
-            // Start motion updates - SIMPLIFIED for better control
-            manager.startDeviceMotionUpdates(to: .main) { [weak self, weak device] motion, error in
-                guard let self = self, let device = device, let motion = motion else { return }
+        // Start accelerometer updates and map to both left/right devices independently
+        motionManager.startAccelerometerUpdates(to: .main) { [weak self] data, error in
+            guard let self = self, let data = data else { return }
 
-                // --- STROKING SPEED (ANY MOTION IN ANY DIRECTION) ---
-                let accel = motion.userAcceleration
-                let totalAccel = sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z)
+            // Magnitude of acceleration
+            let magnitude = sqrt(data.acceleration.x * data.acceleration.x +
+                                 data.acceleration.y * data.acceleration.y +
+                                 data.acceleration.z * data.acceleration.z)
 
-                // Fast smoothing (keep last 3 readings)
-                recentAccels.append(totalAccel)
-                if recentAccels.count > 3 {
-                    recentAccels.removeFirst()
+            // Steering from X axis tilt (-1..1)
+            let tilt = max(-1.0, min(1.0, data.acceleration.x * 3.0))
+
+            // Attribute motion to left or right based on tilt sign to avoid shared SPM
+            // Lower threshold to be more sensitive to light stroking motions.
+            let peakThreshold = 0.18
+            let now = Date()
+
+            var leftSPM: Double = 0.0
+            var rightSPM: Double = 0.0
+
+            // If user is tilting left, attribute strokes to left device; tilt right -> right device
+            if tilt < -0.1 {
+                // LEFT active
+                self.leftRecentAccels.append(magnitude)
+                if self.leftRecentAccels.count > 5 { self.leftRecentAccels.removeFirst() }
+                let avg = self.leftRecentAccels.reduce(0, +) / Double(self.leftRecentAccels.count)
+
+                // Peak detection for left
+                if avg >= peakThreshold && !self.leftWasAboveThreshold {
+                    self.leftWasAboveThreshold = true
+                    if now.timeIntervalSince(self.leftLastPeak) > 0.1 {
+                        self.leftStrokeTimestamps.append(now)
+                        self.leftLastPeak = now
+                        if self.leftStrokeTimestamps.count > 20 { self.leftStrokeTimestamps.removeFirst() }
+                        if self.leftStrokeTimestamps.count >= 2 {
+                            let timeWindow = now.timeIntervalSince(self.leftStrokeTimestamps.first!)
+                            if timeWindow > 0 {
+                                leftSPM = Double(self.leftStrokeTimestamps.count - 1) / timeWindow * 60.0
+                                // Debug: log computed left SPM
+                                if Int(leftSPM) > 0 {
+                                    print("🔔 Left SPM computed: \(Int(leftSPM)) (avgAccel=\(String(format: "%.3f", avg)))")
+                                }
+                            }
+                        }
+                    }
+                } else if avg < peakThreshold {
+                    self.leftWasAboveThreshold = false
                 }
-                let avgAccel = recentAccels.reduce(0, +) / Double(recentAccels.count)
 
-                // BALANCED SPEED: At rest slower than fast CPUs, shaking beats everyone
-                // No motion = 0.75x (slower than fast CPUs 1.1x), max shaking = 1.3x
-                let rawSpeed: Double
-                if avgAccel < 0.15 {
-                    rawSpeed = 0.75  // At rest = slower than fast CPUs, competitive with medium CPUs
-                } else {
-                    // ANY motion adds boost - 0.15G to 0.8G gives 0.75x to 1.3x
-                    // 0.15G = start of bonus, 0.8G+ = full 55% bonus (0.75 + 0.55 = 1.3)
-                    let bonus = min(0.55, (avgAccel - 0.15) * 0.85)
-                    rawSpeed = 0.75 + bonus
+                // Speed mapping for left
+                let rawLeftSpeed: Double = avg < 0.15 ? 0.75 : min(1.3, 0.75 + min(0.55, (avg - 0.15) * 0.85))
+                self.leftSmoothedSpeed = self.leftSmoothedSpeed * 0.6 + rawLeftSpeed * 0.4
+
+                // Right side decays to baseline
+                self.rightRecentAccels.removeAll()
+                self.rightWasAboveThreshold = false
+                self.rightSmoothedSpeed = max(0.75, self.rightSmoothedSpeed * 0.95)
+
+            } else if tilt > 0.1 {
+                // RIGHT active
+                self.rightRecentAccels.append(magnitude)
+                if self.rightRecentAccels.count > 5 { self.rightRecentAccels.removeFirst() }
+                let avg = self.rightRecentAccels.reduce(0, +) / Double(self.rightRecentAccels.count)
+
+                // Peak detection for right
+                if avg >= peakThreshold && !self.rightWasAboveThreshold {
+                    self.rightWasAboveThreshold = true
+                    if now.timeIntervalSince(self.rightLastPeak) > 0.1 {
+                        self.rightStrokeTimestamps.append(now)
+                        self.rightLastPeak = now
+                        if self.rightStrokeTimestamps.count > 20 { self.rightStrokeTimestamps.removeFirst() }
+                        if self.rightStrokeTimestamps.count >= 2 {
+                            let timeWindow = now.timeIntervalSince(self.rightStrokeTimestamps.first!)
+                            if timeWindow > 0 {
+                                rightSPM = Double(self.rightStrokeTimestamps.count - 1) / timeWindow * 60.0
+                                // Debug: log computed right SPM
+                                if Int(rightSPM) > 0 {
+                                    print("🔔 Right SPM computed: \(Int(rightSPM)) (avgAccel=\(String(format: "%.3f", avg)))")
+                                }
+                            }
+                        }
+                    }
+                } else if avg < peakThreshold {
+                    self.rightWasAboveThreshold = false
                 }
 
-                // Very light smoothing for responsiveness
-                smoothedSpeed = smoothedSpeed * 0.6 + rawSpeed * 0.4
-                device.strokingSpeed = smoothedSpeed
+                // Speed mapping for right
+                let rawRightSpeed: Double = avg < 0.15 ? 0.75 : min(1.3, 0.75 + min(0.55, (avg - 0.15) * 0.85))
+                self.rightSmoothedSpeed = self.rightSmoothedSpeed * 0.6 + rawRightSpeed * 0.4
 
-                // --- STEERING (ONLY FROM TILT, NOT MOTION) ---
-                // gravity.x = tilt orientation (-1 left, +1 right)
-                let gravityX = motion.gravity.x
-                let deadzone = 0.05  // Very small deadzone
-                var steerX: Double
+                // Left side decays to baseline
+                self.leftRecentAccels.removeAll()
+                self.leftWasAboveThreshold = false
+                self.leftSmoothedSpeed = max(0.75, self.leftSmoothedSpeed * 0.95)
 
-                if abs(gravityX) < deadzone {
-                    steerX = 0.0
-                } else {
-                    // Much stronger amplification for responsive steering
-                    steerX = gravityX * 3.0  // Increased from 2.0
-                    steerX = max(-1.0, min(1.0, steerX))
-                }
-
-                device.tiltSteering = steerX
-                device.lastMotionUpdate = Date()
-                device.isConnected = true
-
-                // Notify delegate
-                self.delegate?.didReceiveMotion(
-                    from: device.id,
-                    strokingSpeed: smoothedSpeed,
-                    steering: steerX
-                )
+            } else {
+                // No strong tilt - both relax to baseline
+                self.leftRecentAccels.removeAll()
+                self.rightRecentAccels.removeAll()
+                self.leftWasAboveThreshold = false
+                self.rightWasAboveThreshold = false
+                self.leftSmoothedSpeed = max(0.75, self.leftSmoothedSpeed * 0.95)
+                self.rightSmoothedSpeed = max(0.75, self.rightSmoothedSpeed * 0.95)
             }
 
-            device.isConnected = true
-            devices.append(device)
-            headphoneManagers.append(manager)
-
-            print("✅ Connected to primary AirPods (improved sensitivity)")
+            // Send per-device updates
+            if let left = self.devices.first(where: { $0.id == "airpod_left" }) {
+                // Debug: log left update
+                if Int(leftSPM) == 0 {
+                    // occasionally log small accel values to help debugging
+                    if Int.random(in: 0..<200) == 0 {
+                        print("ℹ️ Left update: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), leftSPM=0")
+                    }
+                } else {
+                    print("📤 Sending left motion: speed=\(String(format: "%.2f", self.leftSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(leftSPM))")
+                }
+                self.delegate?.didReceiveMotion(from: left.id, strokingSpeed: self.leftSmoothedSpeed, steering: tilt, spm: leftSPM)
+            }
+            if let right = self.devices.first(where: { $0.id == "airpod_right" }) {
+                if Int(rightSPM) == 0 {
+                    if Int.random(in: 0..<200) == 0 {
+                        print("ℹ️ Right update: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), rightSPM=0")
+                    }
+                } else {
+                    print("📤 Sending right motion: speed=\(String(format: "%.2f", self.rightSmoothedSpeed)), tilt=\(String(format: "%.2f", tilt)), SPM=\(Int(rightSPM))")
+                }
+                self.delegate?.didReceiveMotion(from: right.id, strokingSpeed: self.rightSmoothedSpeed, steering: tilt, spm: rightSPM)
+            }
         }
+
+        print("✅ Started independent accelerometer tracking for AirPods")
+
+        if devices.count > 1 {
+            print("✅ Both AirPods set up for independent accelerometer tracking")
+        }
+        #endif
     }
 
     // MARK: - Add Device Manually (for testing)
@@ -180,26 +276,24 @@ class BluetoothControllerManager: NSObject, ObservableObject {
 
     // MARK: - Motion Updates
 
-    func updateDeviceMotion(deviceId: String, strokingSpeed: Double, steering: Double) {
+    func updateDeviceMotion(deviceId: String, strokingSpeed: Double, steering: Double, spm: Double = 0.0) {
         guard let device = devices.first(where: { $0.id == deviceId }) else { return }
 
         device.strokingSpeed = strokingSpeed
         device.tiltSteering = steering
         device.lastMotionUpdate = Date()
 
-        delegate?.didReceiveMotion(from: deviceId, strokingSpeed: strokingSpeed, steering: steering)
+        delegate?.didReceiveMotion(from: deviceId, strokingSpeed: strokingSpeed, steering: steering, spm: spm)
     }
 
     // MARK: - Cleanup
 
     func disconnectAll() {
-        for manager in headphoneManagers {
-            manager.stopDeviceMotionUpdates()
-        }
+        #if !os(macOS)
+        motionManager.stopAccelerometerUpdates()
+        #endif
 
-        headphoneManagers.removeAll()
         devices.removeAll()
-
         print("🔌 Disconnected all controllers")
     }
 }
@@ -247,7 +341,7 @@ extension BluetoothControllerManager: CBCentralManagerDelegate {
 // MARK: - Delegate Protocol
 
 protocol BluetoothControllerDelegate: AnyObject {
-    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double)
+    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double, spm: Double)
 }
 
 // MARK: - Multi-Device Helper

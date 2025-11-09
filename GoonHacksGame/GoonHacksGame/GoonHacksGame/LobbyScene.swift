@@ -203,11 +203,11 @@ class LobbyScene: SKScene {
         if status.available {
             let claimedCount = airPodClaimCount
             if claimedCount == 0 {
-                instructionLabel.text = "🎧 SHAKE FOR LEFT PLAYER (L) | SHAKE AGAIN FOR RIGHT (R)"
+                instructionLabel.text = "🎧 SHAKE AIRPODS TO JOIN AS LEFT PLAYER (L)"
             } else if claimedCount == 1 {
-                instructionLabel.text = "✅ LEFT CLAIMED | 🎧 SHAKE FOR RIGHT PLAYER (R) | SPACE TO START"
+                instructionLabel.text = "✅ LEFT JOINED | 🎧 SHAKE AGAIN TO JOIN AS RIGHT PLAYER (R)"
             } else {
-                instructionLabel.text = "✅ L & R CLAIMED | 🎧 SHAKE FOR MORE | SPACE TO START"
+                instructionLabel.text = "✅ BOTH AIRPODS JOINED | PRESS SPACE TO START"
             }
             instructionLabel.fontColor = SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0)
         } else {
@@ -228,27 +228,32 @@ class LobbyScene: SKScene {
     @objc private func handleShakeDetected(_ notification: Notification) {
         print("📳 Shake detected in lobby!")
 
-        // Each shake claims a new slot (allows left/right AirPod to be separate players)
-        airPodClaimCount += 1
-
-        // Create unique device ID for this claim
-        let deviceId = "airpod_\(airPodClaimCount)"
-
-        // Label them as L/R or numbered
-        let deviceName: String
-        if airPodClaimCount == 1 {
-            deviceName = "AirPod L"  // Left
-        } else if airPodClaimCount == 2 {
-            deviceName = "AirPod R"  // Right
+        // Determine if this is left or right based on the claim count
+        if airPodClaimCount == 0 {
+            // First shake claims left
+            airPodClaimCount += 1
+            let deviceId = "airpod_left"
+            let deviceName = "AirPod L"
+            
+            // Find first unclaimed slot
+            if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
+                claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
+            }
+            
+        } else if airPodClaimCount == 1 {
+            // Second shake claims right
+            airPodClaimCount += 1
+            let deviceId = "airpod_right"
+            let deviceName = "AirPod R"
+            
+            // Find first unclaimed slot
+            if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
+                claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
+            }
+            
         } else {
-            deviceName = "AirPod \(airPodClaimCount)"  // Additional
-        }
-
-        // Find first unclaimed slot
-        if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-            claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
-        } else {
-            print("⚠️ No unclaimed slots available")
+            print("⚠️ Both AirPods already claimed")
+            return
         }
     }
 
@@ -417,9 +422,10 @@ class LobbyScene: SKScene {
 // MARK: - BluetoothControllerDelegate
 
 extension LobbyScene: BluetoothControllerDelegate {
-    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double) {
+    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double, spm: Double) {
         // Motion updates are handled during the race, not in lobby
         // In lobby, we only care about shake detection for claiming slots
+        // SPM is tracked but not displayed in lobby
     }
 }
 

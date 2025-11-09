@@ -6,6 +6,7 @@
 //
 
 import SpriteKit
+import AVFoundation
 
 class GameCoordinator {
     weak var view: SKView?
@@ -55,6 +56,15 @@ class GameCoordinator {
             return
         }
 
+        // If the app does not have camera authorization, skip photo capture
+        // to avoid prompting the user for permission and interrupting gameplay.
+        let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        if authStatus != .authorized {
+            print("⚠️ Camera not authorized (status=\(authStatus)). Skipping photo capture")
+            startRace(with: players)
+            return
+        }
+
         print("📸 Transitioning to photo capture for \(humanPlayers.count) players")
 
         // Create photo capture scene
@@ -84,8 +94,10 @@ class GameCoordinator {
         // Initialize game state with players
         raceScene?.initializeGame(with: players)
 
-        // Set up motion controllers for human players
-        setupMotionControllers(for: players)
+        // NOTE: motion controllers will be started when the race actually begins
+        // (after the countdown) to avoid applying motion before the race starts.
+        // RaceGameScene.startRace() will call `startMotionControllers(for:)` on
+        // the coordinator when it sets the race start time.
 
         // Transition
         let transition = SKTransition.fade(withDuration: 1.0)
@@ -112,19 +124,61 @@ class GameCoordinator {
     // MARK: - Motion Control Setup
 
     private func setupMotionControllers(for players: [Player]) {
+        // SHARED AIRPODS SUPPORT: Multiple players can use the same AirPods (they move together!)
+        // This allows "co-op" mode where 2 players wear the same AirPods and race as a team
+        var sharedControllers: [String: MotionController] = [:]
+
         for player in players {
             if case .human(let deviceId) = player.type {
-                let controller = MotionController()
-                controller.player = player
+                // If this is an AirPod device, prefer the centralized
+                // BluetoothControllerManager on platforms where it provides
+                // motion data (iOS). On macOS the Bluetooth manager uses a
+                // stub and does not provide accelerometer updates, so we
+                // create a local MotionController instead to read from
+                // the headphone motion or device motion APIs.
+                #if !os(macOS)
+                if deviceId.hasPrefix("airpod_") {
+                    print("🎮 Using BluetoothControllerManager for \(player.name) (device: \(deviceId))")
+                    continue
+                }
+                #else
+                // On macOS, fall through and create a MotionController for AirPods
+                // so that SPM and stroking speed are available.
+                #endif
 
-                // Start AirPods motion
-                controller.start(controlType: .airPods)
+                // Check if we already have a controller for this deviceId
+                if let existingController = sharedControllers[deviceId] {
+                    // Share the controller - add this player to the controller's player list
+                    existingController.players.append(player)
+                    motionControllers[player.id] = existingController
+                    print("🎮 Shared motion controller with \(player.name) (co-op mode! Now \(existingController.players.count) players)")
+                } else {
+                    // Create new controller for non-AirPod devices (e.g. networked iOS)
+                    let controller = MotionController()
+                    controller.player = player
+                    controller.players = [player]  // Initialize with first player
 
-                motionControllers[deviceId] = controller
+                    // Start appropriate motion controller
+                    if let controlType = player.controlType {
+                        controller.start(controlType: controlType)
+                    } else {
+                        controller.start(controlType: .airPods)  // Default
+                    }
 
-                print("🎮 Motion controller started for \(player.name)")
+                    motionControllers[player.id] = controller
+                    sharedControllers[deviceId] = controller
+
+                    print("🎮 Motion controller started for \(player.name) (\(player.controlType == .airPods ? "AirPods" : "iPhone"))")
+                }
             }
         }
+    }
+
+    // Public entrypoint used by RaceGameScene when the race actually starts.
+    // Motion controllers are intentionally started only after the countdown
+    // finishes so players/CPUs don't react before the race begins.
+    func startMotionControllers(for players: [Player]) {
+        setupMotionControllers(for: players)
     }
 
     // MARK: - Motion Updates from Network

@@ -312,11 +312,11 @@ class RaceGameScene: SKScene {
     }
 
     private func createScoreboard() {
-        let bg = SKShapeNode(rectOf: CGSize(width: 240, height: 400), cornerRadius: 10)
+        let bg = SKShapeNode(rectOf: CGSize(width: 240, height: 500), cornerRadius: 10)
         bg.fillColor = SKColor(white: 0.1, alpha: 0.8)
         bg.strokeColor = SKColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 0.9)
         bg.lineWidth = 3
-        bg.position = CGPoint(x: -size.width / 2 + 140, y: size.height / 2 - 220)
+        bg.position = CGPoint(x: -size.width / 2 + 140, y: size.height / 2 - 270)
         bg.name = "scoreboard"
 
         gameCamera.addChild(bg)
@@ -381,7 +381,15 @@ class RaceGameScene: SKScene {
     private func startRace() {
         isPaused = false
         gameState.raceStartTime = Date().timeIntervalSince1970
+        // Start motion controllers now that the race has actually started
+        gameCoordinator?.startMotionControllers(for: gameState.players)
+
         print("🏁 RACE STARTED!")
+        // Debug: print mapping of players -> device IDs to verify control assignment
+        if let players = gameState?.players {
+            let mapping = players.map { "P\($0.playerNumber)=\($0.id)" }.joined(separator: ", ")
+            print("🔎 Player -> Device mapping: \(mapping)")
+        }
     }
 
     // MARK: - Update Loop
@@ -412,6 +420,11 @@ class RaceGameScene: SKScene {
     private func updateRacing(deltaTime: TimeInterval) {
         // Convert trackPoints to CGPoint array for racer update
         let trackPath = gameState.trackPoints.map { $0.position }
+
+        // Only allow movement if race has started
+        guard gameState.raceStartTime != nil else {
+            return
+        }
 
         // Update each racer
         for racer in gameState.activeRacers() {
@@ -489,7 +502,7 @@ class RaceGameScene: SKScene {
         let sorted = gameState.activeRacers().sorted { $0.position.y > $1.position.y }
 
         for (index, racer) in sorted.enumerated() {
-            let yPos: CGFloat = 160 - CGFloat(index) * 45
+            let yPos: CGFloat = 210 - CGFloat(index) * 55  // Increased spacing for SPM labels
 
             // Position number
             let positionLabel = SKLabelNode(text: "\(index + 1)")
@@ -528,6 +541,17 @@ class RaceGameScene: SKScene {
             nameLabel.horizontalAlignmentMode = .left
             nameLabel.position = CGPoint(x: -35, y: yPos - 6)
             scoreboardNode.addChild(nameLabel)
+
+            // SPM meter (Strokes Per Minute) - only for human players
+            if !racer.player.isCPU {
+                let spm = Int(racer.player.strokesPerMinute)
+                let spmLabel = SKLabelNode(text: "\(spm) SPM")
+                spmLabel.fontSize = 12
+                spmLabel.fontColor = spm > 0 ? SKColor(red: 0.2, green: 1.0, blue: 0.3, alpha: 1.0) : SKColor(white: 0.5, alpha: 1.0)
+                spmLabel.horizontalAlignmentMode = .left
+                spmLabel.position = CGPoint(x: -35, y: yPos - 20)
+                scoreboardNode.addChild(spmLabel)
+            }
         }
     }
 
@@ -719,9 +743,11 @@ class RaceGameScene: SKScene {
 // MARK: - BluetoothControllerDelegate
 
 extension RaceGameScene: BluetoothControllerDelegate {
-    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double) {
-        // Find player with matching device ID
-        guard let player = gameState?.players.first(where: { $0.id == deviceId }) else {
+    func didReceiveMotion(from deviceId: String, strokingSpeed: Double, steering: Double, spm: Double) {
+        // Find ALL players with matching device ID (co-op mode!)
+        let matchingPlayers = gameState?.players.filter { $0.id == deviceId } ?? []
+
+        if matchingPlayers.isEmpty {
             // Debug: Player not found
             if Int.random(in: 0..<60) == 0 {
                 print("⚠️ Motion from \(deviceId) but no matching player found")
@@ -729,15 +755,25 @@ extension RaceGameScene: BluetoothControllerDelegate {
             return
         }
 
-        // Update player's speed (strokingSpeed is now 1.0-1.3)
-        player.speedInput = CGFloat(strokingSpeed)
+        // Only update if race has started
+        guard gameState?.raceStartTime != nil else {
+            return
+        }
 
-        // Update steering from tilt (-1 to 1)
-        player.steeringInput = CGVector(dx: steering, dy: 0)
+        // Update all matching players (they move together in co-op mode!)
+        for player in matchingPlayers {
+            player.speedInput = CGFloat(strokingSpeed)
+            player.steeringInput = CGVector(dx: steering, dy: 0)
+            player.strokesPerMinute = spm
+        }
 
-        // Debug logging (every 60 frames)
-        if Int.random(in: 0..<60) == 0 {
-            print("🎮 P\(player.playerNumber): speed=\(String(format: "%.2f", strokingSpeed))x, steer=\(String(format: "%.2f", steering))")
+        // Debug logging: print when we have a non-zero SPM, or occasionally sample when SPM==0
+        if Int(spm) > 0 {
+            let playerNumbers = matchingPlayers.map { "P\($0.playerNumber)" }.joined(separator: ", ")
+            print("🎮 \(playerNumbers) <= device \(deviceId): speed=\(String(format: "%.2f", strokingSpeed))x, SPM=\(Int(spm))")
+        } else if Int.random(in: 0..<200) == 0 {
+            let playerNumbers = matchingPlayers.map { "P\($0.playerNumber)" }.joined(separator: ", ")
+            print("ℹ️ (sample) \(playerNumbers) <= device \(deviceId): speed=\(String(format: "%.2f", strokingSpeed))x, SPM=0")
         }
     }
 }
