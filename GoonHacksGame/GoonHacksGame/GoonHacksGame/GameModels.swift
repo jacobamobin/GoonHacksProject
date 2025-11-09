@@ -438,23 +438,18 @@ class GameState {
     func checkCheckpoints() -> [Player]? {
         var eliminated: [Player] = []
 
-        for checkpoint in checkpoints where !checkpoint.passed {
-            let racersAtCheckpoint = activeRacers().filter { racer in
-                racer.position.y >= checkpoint.position.y && racer.lastCheckpointPassed < checkpoint.id
-            }
+        for i in 0..<checkpoints.count {
+            if checkpoints[i].passed { continue }
 
-            if !racersAtCheckpoint.isEmpty {
-                // Mark checkpoint as passed for these racers
-                for racer in racersAtCheckpoint {
-                    racer.lastCheckpointPassed = checkpoint.id
-                }
+            let active = activeRacers()
+            let racersPastCheckpoint = active.filter { $0.position.y >= checkpoints[i].position.y }
 
-                // Find last place racers (within epsilon), eliminate only ONE at random
-                let active = activeRacers()
-                guard let minY = active.map({ $0.position.y }).min() else { continue }
-                let epsilon: CGFloat = 20  // consider ties within 20 pts
-                let tiedLast = active.filter { abs($0.position.y - minY) <= epsilon }
-                if let loser = tiedLast.randomElement() {
+            // Trigger elimination when the second to last player crosses the line
+            if racersPastCheckpoint.count >= active.count - 1 {
+                checkpoints[i].passed = true
+
+                // Find the player who is furthest behind
+                if let loser = active.min(by: { $0.position.y < $1.position.y }) {
                     loser.player.isEliminated = true
                     eliminated.append(loser.player)
                 }

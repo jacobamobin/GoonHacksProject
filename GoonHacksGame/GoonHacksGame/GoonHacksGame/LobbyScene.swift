@@ -230,32 +230,13 @@ class LobbyScene: SKScene {
     @objc private func handleShakeDetected(_ notification: Notification) {
         print("📳 Shake detected in lobby!")
 
-        // Determine if this is left or right based on the claim count
-        if airPodClaimCount == 0 {
-            // First shake claims left
-            airPodClaimCount += 1
-            let deviceId = "airpod_left"
-            let deviceName = "AirPod L"
-            
-            // Find first unclaimed slot
-            if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-                claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
-            }
-            
-        } else if airPodClaimCount == 1 {
-            // Second shake claims right
-            airPodClaimCount += 1
-            let deviceId = "airpod_right"
-            let deviceName = "AirPod R"
-            
-            // Find first unclaimed slot
-            if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
-                claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
-            }
-            
+        // Find first unclaimed slot
+        if let nextSlot = playerSlots.first(where: { !$0.isClaimed }) {
+            let deviceId = "airpod_\(nextSlot.playerNumber)"
+            let deviceName = "AirPod \(nextSlot.playerNumber)"
+            claimSlot(playerNumber: nextSlot.playerNumber, deviceId: deviceId, deviceName: deviceName)
         } else {
-            print("⚠️ Both AirPods already claimed")
-            return
+            print("⚠️ All slots already claimed")
         }
     }
 

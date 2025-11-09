@@ -134,12 +134,12 @@ class AirPodsMotionController {
             active = true
         }
 
-        // STROKING = UP/DOWN MOTION ONLY (use Y-axis)
-        let totalAccel = abs(acceleration.y)
+        // STROKING = ANY MOTION (orientation-independent)
+        let totalAccel = sqrt(acceleration.x * acceleration.x + acceleration.y * acceleration.y + acceleration.z * acceleration.z)
 
-        // Simple smoothing (keep last 3 readings only for faster response)
+        // Simple smoothing (keep last 5 readings for smoother response)
         recentAccelerations.append(totalAccel)
-        if recentAccelerations.count > 3 {
+        if recentAccelerations.count > 5 {
             recentAccelerations.removeFirst()
         }
         let avgAccel = recentAccelerations.reduce(0, +) / Double(recentAccelerations.count)

@@ -326,13 +326,13 @@ class RaceGameScene: SKScene {
     private func playerColor(playerNumber: Int) -> SKColor {
         let colors: [SKColor] = [
             SKColor(red: 1.0, green: 0.2, blue: 0.2, alpha: 1.0),  // 1: Red
-            SKColor(red: 1.0, green: 0.9, blue: 0.2, alpha: 1.0),  // 2: Yellow
-            SKColor(red: 0.2, green: 0.4, blue: 1.0, alpha: 1.0),  // 3: Blue
-            SKColor(red: 0.2, green: 1.0, blue: 0.2, alpha: 1.0),  // 4: Green
-            SKColor(red: 0.2, green: 0.9, blue: 0.9, alpha: 1.0),  // 5: Cyan
-            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // 6: Orange
-            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // 7: Purple
-            SKColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 1.0),  // 8: Brown
+            SKColor(red: 0.2, green: 0.6, blue: 1.0, alpha: 1.0),  // 2: Blue
+            SKColor(red: 0.3, green: 1.0, blue: 0.3, alpha: 1.0),  // 3: Green
+            SKColor(red: 1.0, green: 0.8, blue: 0.2, alpha: 1.0),  // 4: Yellow
+            SKColor(red: 1.0, green: 0.4, blue: 0.8, alpha: 1.0),  // 5: Pink
+            SKColor(red: 0.6, green: 0.2, blue: 1.0, alpha: 1.0),  // 6: Purple
+            SKColor(red: 1.0, green: 0.6, blue: 0.2, alpha: 1.0),  // 7: Orange
+            SKColor(red: 0.2, green: 1.0, blue: 0.8, alpha: 1.0),  // 8: Cyan
         ]
         return colors[(playerNumber - 1) % colors.count]
     }
