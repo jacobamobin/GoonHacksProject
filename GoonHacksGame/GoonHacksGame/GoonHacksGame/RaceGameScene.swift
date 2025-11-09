@@ -35,9 +35,18 @@ class RaceGameScene: SKScene {
     private var isPauseMenuVisible = false
     private var pauseMenu: SKNode?
     private var savedPlayers: [Player] = []
+    // Elimination banner
+    private var eliminationLabel: SKLabelNode?
 
     // Bluetooth controller manager
     private var bluetoothManager: BluetoothControllerManager?
+    // Debug overlay
+    private var debugOverlay: SKNode?
+    private var debugLeftLabel: SKLabelNode?
+    private var debugRightLabel: SKLabelNode?
+    private var debugLeftSPMLabel: SKLabelNode?
+    private var debugRightSPMLabel: SKLabelNode?
+    private var debugPeersLabel: SKLabelNode?
 
     // MARK: - Initialization
 
@@ -70,9 +79,7 @@ class RaceGameScene: SKScene {
         setupRacers()
         setupUI()
         setupBluetoothControllers()
-
-        // Start motion controllers immediately
-        gameCoordinator?.startMotionControllers(for: gameState.players)
+    setupDebugOverlay()
 
         // Start with countdown
         startCountdown()
@@ -115,53 +122,87 @@ class RaceGameScene: SKScene {
     private func setupTrack() {
         // GLOWING NEON BORDERS - like a fluid racing lane
         let trackPoints = gameState.trackPoints
-        let laneWidth = gameState.trackWidth / 8
+        // Draw continuous left/right borders and lane separators using polylines so edges are not dots
+        let leftPath = CGMutablePath()
+        let rightPath = CGMutablePath()
 
-        // Draw track with GLOWING borders and lanes
-        for i in 0..<(trackPoints.count - 1) {
+        var leftStarted = false
+        var rightStarted = false
+
+        // Lane separators (8 lanes) paths
+        var lanePaths: [CGMutablePath] = (0..<8).map { _ in CGMutablePath() }
+        var laneStarted = [Bool](repeating: false, count: 8)
+
+        for (index, point) in trackPoints.enumerated() {
+            let halfWidth = point.width / 2
+            let leftX = point.position.x - halfWidth
+            let rightX = point.position.x + halfWidth
+            let y = point.position.y
+
+            if !leftStarted {
+                leftPath.move(to: CGPoint(x: leftX, y: y))
+                leftStarted = true
+            } else {
+                leftPath.addLine(to: CGPoint(x: leftX, y: y))
+            }
+
+            if !rightStarted {
+                rightPath.move(to: CGPoint(x: rightX, y: y))
+                rightStarted = true
+            } else {
+                rightPath.addLine(to: CGPoint(x: rightX, y: y))
+            }
+
+            // Lane separators evenly spaced across track width
+            let laneWidth = point.width / 8.0
+            for j in 0..<8 {
+                let laneX = point.position.x - halfWidth + CGFloat(j) * laneWidth
+                if !laneStarted[j] {
+                    lanePaths[j].move(to: CGPoint(x: laneX, y: y))
+                    laneStarted[j] = true
+                } else {
+                    lanePaths[j].addLine(to: CGPoint(x: laneX, y: y))
+                }
+            }
+        }
+
+        // Create SKShapeNodes for borders
+        let leftBorder = SKShapeNode(path: leftPath)
+        leftBorder.strokeColor = SKColor(red: 0.0, green: 0.8, blue: 1.0, alpha: 1.0)
+        leftBorder.lineWidth = 8
+        leftBorder.glowWidth = 24
+        leftBorder.zPosition = 5
+        leftBorder.fillColor = .clear
+        trackNode.addChild(leftBorder)
+
+        let rightBorder = SKShapeNode(path: rightPath)
+        rightBorder.strokeColor = SKColor(red: 0.0, green: 0.8, blue: 1.0, alpha: 1.0)
+        rightBorder.lineWidth = 8
+        rightBorder.glowWidth = 24
+        rightBorder.zPosition = 5
+        rightBorder.fillColor = .clear
+        trackNode.addChild(rightBorder)
+
+        // Thin lane separators
+        for j in 0..<8 {
+            let laneNode = SKShapeNode(path: lanePaths[j])
+            laneNode.strokeColor = SKColor(white: 1.0, alpha: 0.06)
+            laneNode.lineWidth = 2
+            laneNode.zPosition = 2
+            trackNode.addChild(laneNode)
+        }
+
+        // Fluid background patches for depth
+        for i in stride(from: 0, to: trackPoints.count - 1, by: 6) {
             let point = trackPoints[i]
-            let nextPoint = trackPoints[i + 1]
-
+            let nextPoint = trackPoints[min(i + 6, trackPoints.count - 1)]
             let segmentWidth = point.width
-
-            // GLOWING LEFT BORDER (cyan/electric blue)
-            let leftEdge = SKShapeNode(circleOfRadius: 8)
-            leftEdge.position = CGPoint(x: point.position.x - segmentWidth/2, y: point.position.y)
-            leftEdge.fillColor = SKColor(red: 0.0, green: 0.8, blue: 1.0, alpha: 1.0)  // Bright cyan
-            leftEdge.strokeColor = .clear
-            leftEdge.glowWidth = 20  // Big glow!
-            leftEdge.zPosition = 5
-            trackNode.addChild(leftEdge)
-
-            // GLOWING RIGHT BORDER (cyan/electric blue)
-            let rightEdge = SKShapeNode(circleOfRadius: 8)
-            rightEdge.position = CGPoint(x: point.position.x + segmentWidth/2, y: point.position.y)
-            rightEdge.fillColor = SKColor(red: 0.0, green: 0.8, blue: 1.0, alpha: 1.0)  // Bright cyan
-            rightEdge.strokeColor = .clear
-            rightEdge.glowWidth = 20  // Big glow!
-            rightEdge.zPosition = 5
-            trackNode.addChild(rightEdge)
-
-            // Lane dividers
-            for j in 1..<8 {
-                let x = point.position.x - segmentWidth/2 + CGFloat(j) * laneWidth
-                let line = SKShapeNode(rectOf: CGSize(width: 2, height: abs(nextPoint.position.y - point.position.y) + 10))
-                line.position = CGPoint(x: x, y: (point.position.y + nextPoint.position.y) / 2)
-                line.fillColor = SKColor(red: 0.3, green: 0.8, blue: 1.0, alpha: 0.2)
-                line.strokeColor = .clear
-                line.zPosition = 2
-                trackNode.addChild(line)
-            }
-
-            // Darker fluid background (like swimming pool)
-            if i % 3 == 0 {
-                let surface = SKShapeNode(rectOf: CGSize(width: segmentWidth - 20, height: abs(nextPoint.position.y - point.position.y) + 10))
-                surface.position = CGPoint(x: point.position.x, y: (point.position.y + nextPoint.position.y) / 2)
-                surface.fillColor = SKColor(red: 0.05, green: 0.15, blue: 0.25, alpha: 0.4)  // Deep blue water
-                surface.strokeColor = .clear
-                surface.zPosition = 1
-                trackNode.addChild(surface)
-            }
+            let surface = SKShapeNode(rectOf: CGSize(width: segmentWidth - 20, height: abs(nextPoint.position.y - point.position.y) + 10))
+            surface.position = CGPoint(x: point.position.x, y: (point.position.y + nextPoint.position.y) / 2)
+            surface.fillColor = SKColor(red: 0.05, green: 0.15, blue: 0.25, alpha: 0.4)
+            surface.strokeColor = .clear
+            surface.zPosition = 1
+            trackNode.addChild(surface)
         }
 
         // No obstacles (removed)
@@ -171,45 +212,73 @@ class RaceGameScene: SKScene {
         for (index, checkpoint) in gameState.checkpoints.enumerated() {
             let isFinish = (index == gameState.checkpoints.count - 1)
 
-            // Checkpoint line
-            let width = checkpoint.width * 1.2
-            let line = SKShapeNode(rectOf: CGSize(width: width, height: 10))
-            line.position = checkpoint.position
-            line.fillColor = isFinish ?
-                SKColor(red: 1.0, green: 0.8, blue: 0.2, alpha: 0.8) :
-                SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 0.6)
-            line.strokeColor = .white
-            line.lineWidth = 3
-            line.glowWidth = 20
-            line.zPosition = 15
-            line.name = "checkpoint_\(checkpoint.id)"
-            checkpointsNode.addChild(line)
+            // Checkpoint line: span edge-to-edge and keep centered
+            let width = gameState.trackWidth * 1.02
+            let pos = CGPoint(x: 0, y: checkpoint.position.y)
+
+            if isFinish {
+                // Draw finish checkerboard stripe
+                let checker = createCheckerboardStripe(width: width, height: 18, squareSize: 18)
+                checker.position = pos
+                checker.zPosition = 20
+                checker.name = "checkpoint_\(checkpoint.id)"
+                checkpointsNode.addChild(checker)
+            } else {
+                let line = SKShapeNode(rectOf: CGSize(width: width, height: 10))
+                line.position = pos
+                line.fillColor = SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 0.6)
+                line.strokeColor = .white
+                line.lineWidth = 3
+                line.glowWidth = 20
+                line.zPosition = 15
+                line.name = "checkpoint_\(checkpoint.id)"
+                checkpointsNode.addChild(line)
+            }
 
             // Label
             let label = SKLabelNode(text: isFinish ? "🏁 FINISH" : "CP\(checkpoint.id + 1)")
             label.fontSize = isFinish ? 36 : 24
             label.fontColor = .white
-            label.position = CGPoint(x: checkpoint.position.x, y: checkpoint.position.y + 30)
+            label.position = CGPoint(x: 0, y: pos.y + 30)
             label.zPosition = 16
             checkpointsNode.addChild(label)
         }
 
-        // Starting line
-        let startLine = SKShapeNode(rectOf: CGSize(width: 600, height: 10))
-        startLine.position = CGPoint(x: 0, y: 50)
-        startLine.fillColor = SKColor(red: 0.2, green: 1.0, blue: 0.3, alpha: 0.8)
-        startLine.strokeColor = .white
-        startLine.lineWidth = 3
-        startLine.glowWidth = 20
-        startLine.zPosition = 15
-        trackNode.addChild(startLine)
+        // Starting line - checkerboard style covering track
+        let startWidth = gameState.trackWidth * 1.02
+        let startChecker = createCheckerboardStripe(width: startWidth, height: 18, squareSize: 18)
+        startChecker.position = CGPoint(x: 0, y: 50)
+        startChecker.zPosition = 20
+        trackNode.addChild(startChecker)
 
         let startLabel = SKLabelNode(text: "🏁 START")
         startLabel.fontSize = 36
         startLabel.fontColor = .white
         startLabel.position = CGPoint(x: 0, y: 65)
-        startLabel.zPosition = 16
+        startLabel.zPosition = 21
         trackNode.addChild(startLabel)
+    }
+
+    // Helper: create a checkerboard stripe node spanning width
+    private func createCheckerboardStripe(width: CGFloat, height: CGFloat, squareSize: CGFloat) -> SKNode {
+        let node = SKNode()
+
+        // Number of squares across (cover slightly more to avoid gaps)
+        let cols = Int(ceil(width / squareSize)) + 2
+        let startX = -width / 2 - squareSize
+
+        for col in 0..<cols {
+            // Alternate color
+            let isBlack = (col % 2 == 0)
+            let color: SKColor = isBlack ? .black : .white
+            let square = SKShapeNode(rectOf: CGSize(width: squareSize, height: height))
+            square.fillColor = color
+            square.strokeColor = .clear
+            square.position = CGPoint(x: startX + CGFloat(col) * squareSize + squareSize / 2, y: 0)
+            node.addChild(square)
+        }
+
+        return node
     }
 
     private func setupRacers() {
@@ -229,7 +298,7 @@ class RaceGameScene: SKScene {
         let color = playerColor(playerNumber: racer.player.playerNumber)
 
         // Sperm body with COLOR
-        let body = createSpermShape(color: color)
+    let body = createSpermShape(color: color)
         racerNode.addChild(body)
 
         // Add face photo if player has one
@@ -252,12 +321,13 @@ class RaceGameScene: SKScene {
         }
 
         // Player number label
-        let numberLabel = SKLabelNode(text: "P\(racer.player.playerNumber)")
-        numberLabel.fontSize = 16
-        numberLabel.fontColor = .white
-        numberLabel.position = CGPoint(x: 0, y: -35)
-        numberLabel.name = "number"
-        racerNode.addChild(numberLabel)
+    // Player number shown near the head (slightly above)
+    let numberLabel = SKLabelNode(text: "P\(racer.player.playerNumber)")
+    numberLabel.fontSize = 18
+    numberLabel.fontColor = .white
+    numberLabel.position = CGPoint(x: 0, y: 48)
+    numberLabel.name = "number"
+    racerNode.addChild(numberLabel)
 
         // Particle trail with player color
         let trail = createParticleTrail(color: color)
@@ -268,55 +338,56 @@ class RaceGameScene: SKScene {
 
     private func createSpermShape(color: SKColor) -> SKNode {
         let spermNode = SKNode()
+        spermNode.name = "sperm"
 
-        // Head with player color
-        let head = SKShapeNode(circleOfRadius: 35)
+        // Head with player color (increased for high-res screens)
+        let head = SKShapeNode(circleOfRadius: 50)
         head.fillColor = color
         head.strokeColor = color.withAlphaComponent(0.8)
         head.lineWidth = 4
         head.glowWidth = 15
         head.name = "head"
         spermNode.addChild(head)
+        // Tail - longer and thicker for visibility
+        let tailPath = CGMutablePath()
+        tailPath.move(to: CGPoint(x: 0, y: -50))
+        tailPath.addCurve(to: CGPoint(x: 0, y: -140), control1: CGPoint(x: -30, y: -80), control2: CGPoint(x: 30, y: -120))
 
-        // Tail
-        let tailPath = UIBezierPath()
-        tailPath.move(to: CGPoint(x: 0, y: -35))
-        tailPath.addCurve(to: CGPoint(x: 0, y: -100), controlPoint1: CGPoint(x: -20, y: -60), controlPoint2: CGPoint(x: 20, y: -80))
-
-        let tail = SKShapeNode(path: tailPath.cgPath)
-        tail.lineWidth = 8
+        let tail = SKShapeNode(path: tailPath)
+        tail.lineWidth = 12
         tail.strokeColor = color
-        tail.glowWidth = 10
+        tail.glowWidth = 12
         tail.name = "tail"
         spermNode.addChild(tail)
 
-        // Tail animation
+        // Tail animation - use actions that can be sped up by adjusting 'speed' property
         let wiggle = SKAction.sequence([
-            SKAction.rotate(byAngle: 0.2, duration: 0.1),
-            SKAction.rotate(byAngle: -0.4, duration: 0.2),
-            SKAction.rotate(byAngle: 0.2, duration: 0.1)
+            SKAction.rotate(byAngle: 0.18, duration: 0.12),
+            SKAction.rotate(byAngle: -0.36, duration: 0.24),
+            SKAction.rotate(byAngle: 0.18, duration: 0.12)
         ])
-        tail.run(SKAction.repeatForever(wiggle))
+        let wiggleForever = SKAction.repeatForever(wiggle)
+        tail.run(wiggleForever)
 
         return spermNode
     }
 
     private func createParticleTrail(color: SKColor) -> SKEmitterNode {
         let trail = SKEmitterNode()
-        trail.particleBirthRate = 30
-        trail.particleLifetime = 0.5
-        trail.particleScale = 0.3
+        trail.particleBirthRate = 45
+        trail.particleLifetime = 0.6
+        trail.particleScale = 0.45
         trail.particleScaleSpeed = -0.2
-        trail.particleAlpha = 0.6
-        trail.particleAlphaSpeed = -1.0
+        trail.particleAlpha = 0.7
+        trail.particleAlphaSpeed = -1.2
         trail.particleColor = color
         trail.particleColorBlendFactor = 1.0
         trail.particleBlendMode = .add
-        trail.position = CGPoint(x: 0, y: -100)
+        trail.position = CGPoint(x: 0, y: -130)
         trail.emissionAngle = CGFloat.pi * 1.5
-        trail.emissionAngleRange = CGFloat.pi * 0.2
-        trail.particleSpeed = 50
-        trail.particleSpeedRange = 20
+        trail.emissionAngleRange = CGFloat.pi * 0.25
+        trail.particleSpeed = 70
+        trail.particleSpeedRange = 30
         trail.zPosition = -1
         trail.name = "trail"
 
@@ -343,22 +414,31 @@ class RaceGameScene: SKScene {
 
         // Player positions (top of screen)
         let laneWidth = gameState.trackWidth / 8
-        let startX = -gameState.trackWidth / 2 + laneWidth / 2
+        let defaultStartX = -gameState.trackWidth / 2 + laneWidth / 2
         for i in 0..<8 {
-            let x = startX + CGFloat(i) * laneWidth
             let y = size.height / 2 - 50
 
-            let player = gameState.players.first { $0.playerNumber == i + 1 }
+            // If a racer exists for this player number, anchor the label to the racer's lane offset
+            let playerNumber = i + 1
+            var x: CGFloat
+            if let racer = gameState.racers.first(where: { $0.player.playerNumber == playerNumber }) {
+                // Use track start X + laneOffset for accurate alignment
+                let trackStartX = gameState.trackPoints.first?.position.x ?? 0
+                x = trackStartX + racer.laneOffset
+            } else {
+                // Fallback to uniform spacing across track
+                x = defaultStartX + CGFloat(i) * laneWidth
+            }
 
             let positionNode = SKNode()
             positionNode.position = CGPoint(x: x, y: y)
-            positionNode.name = "playerPosition_\(i + 1)"
+            positionNode.name = "playerPosition_\(playerNumber)"
             gameCamera.addChild(positionNode)
 
-            let numberLabel = SKLabelNode(text: "P\(i + 1)")
-            numberLabel.fontSize = 24
+            let numberLabel = SKLabelNode(text: "P\(playerNumber)")
+            numberLabel.fontSize = 20
             numberLabel.fontName = "SF Pro"
-            numberLabel.fontColor = player != nil ? playerColor(playerNumber: i + 1) : .gray
+            numberLabel.fontColor = gameState.players.first(where: { $0.playerNumber == playerNumber }) != nil ? playerColor(playerNumber: playerNumber) : .gray
             positionNode.addChild(numberLabel)
 
             let rankLabel = SKLabelNode(text: "-")
@@ -369,6 +449,16 @@ class RaceGameScene: SKScene {
             rankLabel.name = "rankLabel"
             positionNode.addChild(rankLabel)
         }
+
+        // Create elimination banner (hidden initially)
+        eliminationLabel = SKLabelNode(text: "")
+        eliminationLabel?.fontSize = 28
+        eliminationLabel?.fontName = "SF Pro"
+        eliminationLabel?.fontColor = SKColor(red: 1.0, green: 0.3, blue: 0.3, alpha: 1.0)
+        eliminationLabel?.position = CGPoint(x: 0, y: -size.height / 2 + 60)
+        eliminationLabel?.zPosition = 100
+        eliminationLabel?.alpha = 0
+        if let el = eliminationLabel { gameCamera.addChild(el) }
     }
 
     private func setupBluetoothControllers() {
@@ -378,6 +468,59 @@ class RaceGameScene: SKScene {
 
         print("🎮 Bluetooth controllers ready for race")
         print("📱 Connected devices: \(bluetoothManager?.connectedCount ?? 0)")
+    }
+
+    private func setupDebugOverlay() {
+        // Small camera-anchored telemetry panel for tuning motion/workflow
+        debugOverlay = SKNode()
+        debugOverlay?.name = "debugOverlay"
+        debugOverlay?.zPosition = 999
+
+        let panel = SKShapeNode(rectOf: CGSize(width: 320, height: 130), cornerRadius: 8)
+        panel.fillColor = SKColor(white: 0.05, alpha: 0.75)
+        panel.strokeColor = SKColor(red: 0.2, green: 0.8, blue: 1.0, alpha: 0.9)
+        panel.lineWidth = 2
+        panel.position = CGPoint(x: size.width / 2 - 180, y: size.height / 2 - 90)
+        debugOverlay?.addChild(panel)
+
+        // Labels
+        let leftLabel = SKLabelNode(text: "L signal: 0.000")
+        leftLabel.fontSize = 12
+        leftLabel.horizontalAlignmentMode = .left
+        leftLabel.position = CGPoint(x: -150, y: 40)
+        panel.addChild(leftLabel)
+        debugLeftLabel = leftLabel
+
+        let rightLabel = SKLabelNode(text: "R signal: 0.000")
+        rightLabel.fontSize = 12
+        rightLabel.horizontalAlignmentMode = .left
+        rightLabel.position = CGPoint(x: -150, y: 18)
+        panel.addChild(rightLabel)
+        debugRightLabel = rightLabel
+
+        let leftSPM = SKLabelNode(text: "L SPM: 0")
+        leftSPM.fontSize = 12
+        leftSPM.horizontalAlignmentMode = .left
+        leftSPM.position = CGPoint(x: -150, y: -4)
+        panel.addChild(leftSPM)
+        debugLeftSPMLabel = leftSPM
+
+        let rightSPM = SKLabelNode(text: "R SPM: 0")
+        rightSPM.fontSize = 12
+        rightSPM.horizontalAlignmentMode = .left
+        rightSPM.position = CGPoint(x: -150, y: -26)
+        panel.addChild(rightSPM)
+        debugRightSPMLabel = rightSPM
+
+        let peers = SKLabelNode(text: "Peers: 0")
+        peers.fontSize = 12
+        peers.horizontalAlignmentMode = .left
+        peers.position = CGPoint(x: -150, y: -48)
+        panel.addChild(peers)
+        debugPeersLabel = peers
+
+        // Camera-anchored
+        gameCamera.addChild(debugOverlay!)
     }
 
     private func createScoreboard() {
@@ -448,9 +591,13 @@ class RaceGameScene: SKScene {
     }
 
     private func startRace() {
+        // Start motion controllers right at race start so sensors begin feeding immediately,
+        // then clear smoothing buffers so the first strokes are responsive.
+        gameCoordinator?.startMotionControllers(for: gameState.players)
+        bluetoothManager?.resetMotionBuffers()
+
         isPaused = false
         gameState.raceStartTime = Date().timeIntervalSince1970
-        // Motion controllers are already started, so we don't need to do anything here.
 
         print("🏁 RACE STARTED!")
         // Debug: print mapping of players -> device IDs to verify control assignment
@@ -506,9 +653,10 @@ class RaceGameScene: SKScene {
 
                 // Update tail animation speed based on SPM
                 if let tail = racerNode.childNode(withName: "sperm")?.childNode(withName: "tail") {
+                    // SPM -> wiggle speed mapping: baseline 0.6, scale up with SPM
                     let spm = racer.player.strokesPerMinute
-                    let speed = 0.5 + (spm / 100.0)
-                    tail.speed = CGFloat(speed)
+                    let mapped = 0.6 + min(2.0, CGFloat(spm) / 40.0)
+                    tail.speed = CGFloat(mapped)
                 }
             }
         }
@@ -526,14 +674,33 @@ class RaceGameScene: SKScene {
 
         // Update player positions
         updatePlayerPositions()
+
+        // Update debug overlay values from Bluetooth manager (if present)
+        if let mgr = bluetoothManager {
+            debugLeftLabel?.text = String(format: "L signal: %.3f", mgr.debugLeftSignal)
+            debugRightLabel?.text = String(format: "R signal: %.3f", mgr.debugRightSignal)
+            debugLeftSPMLabel?.text = String(format: "L SPM: %d", Int(mgr.debugLeftSPM))
+            debugRightSPMLabel?.text = String(format: "R SPM: %d", Int(mgr.debugRightSPM))
+            debugPeersLabel?.text = "Peers: \(mgr.debugConnectedPeersCount)"
+        }
     }
 
     private func updatePlayerPositions() {
         let sortedRacers = gameState.racers.sorted { $0.position.y > $1.position.y }
         for (index, racer) in sortedRacers.enumerated() {
+            // Update rank label
             if let positionNode = gameCamera.childNode(withName: "playerPosition_\(racer.player.playerNumber)"),
                let rankLabel = positionNode.childNode(withName: "rankLabel") as? SKLabelNode {
                 rankLabel.text = "\(index + 1)"
+
+                // Reposition the camera-anchored node so it lines up with the racer's lane.
+                // Convert racer's world position into camera-space and set x accordingly.
+                if let cam = camera {
+                    let pointInCamera = convert(racer.position, to: cam)
+                    // Keep the original y of the positionNode (top UI), update x only
+                    let currentY = positionNode.position.y
+                    positionNode.position = CGPoint(x: pointInCamera.x, y: currentY)
+                }
             }
         }
     }
@@ -660,6 +827,16 @@ class RaceGameScene: SKScene {
                     SKAction.scale(to: 0.5, duration: 0.5)
                 ]))
             }
+        }
+
+        // Show elimination banner for a short time
+        if let first = eliminated.first {
+            eliminationLabel?.text = "Player \(first.playerNumber) eliminated"
+            eliminationLabel?.alpha = 1.0
+            eliminationLabel?.run(SKAction.sequence([
+                SKAction.wait(forDuration: 2.5),
+                SKAction.fadeOut(withDuration: 0.5)
+            ]))
         }
 
         // Check if race is over

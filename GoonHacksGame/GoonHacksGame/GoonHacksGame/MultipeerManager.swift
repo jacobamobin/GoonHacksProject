@@ -85,6 +85,13 @@ class MultipeerManager: NSObject {
         advertiser?.startAdvertisingPeer()
 
         print("🎮 Started hosting game session")
+        // Also start browsing so hosts can discover clients in restrictive networks
+        if browser == nil {
+            browser = MCNearbyServiceBrowser(peer: peerID, serviceType: serviceType)
+            browser?.delegate = self
+            browser?.startBrowsingForPeers()
+            print("🔍 Host also started browsing to improve discovery")
+        }
     }
 
     func stopHosting() {
@@ -104,6 +111,13 @@ class MultipeerManager: NSObject {
         browser?.startBrowsingForPeers()
 
         print("🔍 Browsing for game sessions...")
+        // Also start advertising as a fallback so that discovery works both ways
+        if advertiser == nil {
+            advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: nil, serviceType: serviceType)
+            advertiser?.delegate = self
+            advertiser?.startAdvertisingPeer()
+            print("🎮 Browser also started advertising to improve discovery")
+        }
     }
 
     func stopBrowsing() {
@@ -118,7 +132,14 @@ class MultipeerManager: NSObject {
         let targetPeers = peers ?? session.connectedPeers
 
         guard !targetPeers.isEmpty else {
-            print("⚠️ No peers to send message to")
+            // Helpful debug to guide the developer/user why messages aren't sent
+            let count = session.connectedPeers.count
+            if count == 0 {
+                print("⚠️ No peers to send message to — session.connectedPeers is empty. Are you hosting or browsing on the other device?")
+            } else {
+                let names = session.connectedPeers.map { $0.displayName }.joined(separator: ", ")
+                print("⚠️ No target peers passed and session.connectedPeers is available but empty target: count=\(count) peers=\(names)")
+            }
             return
         }
 

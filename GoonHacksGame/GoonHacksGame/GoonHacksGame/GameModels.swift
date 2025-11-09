@@ -116,12 +116,15 @@ class Racer {
         // CPU speed range: minimum = player idle speed (0.75x), max = 1.0x
         // Players can easily beat CPUs by shaking (up to 1.3x)
         if player.isCPU {
-            // CPUs should be a tiny bit behind players and all different
-            // Base around 0.9x with slight per-CPU variance seeded by player number
-            let base: CGFloat = 0.85
-            let seedOffset: CGFloat = 0.03 * CGFloat(player.playerNumber % 5) // 0.00, 0.03, 0.06, 0.09, 0.12
-            let jitter: CGFloat = CGFloat.random(in: -0.05...0.05)
-            cpuPersonality = max(0.75, min(1.0, base + seedOffset + jitter))
+            // CPUs should be competitive but clearly distinct from each other.
+            // Increase personality spread so CPU speeds vary more noticeably.
+            let base: CGFloat = 0.88
+            // Larger deterministic offset so ordering between CPUs is clearer
+            let deterministicOffset = 0.02 * CGFloat(player.playerNumber % 6)
+            // Increase jitter to allow more per-match variance
+            let jitter: CGFloat = CGFloat.random(in: -0.06...0.06)
+            // Wider clamp so some CPUs can be noticeably faster or slower
+            cpuPersonality = max(0.78, min(1.18, base + deterministicOffset + jitter))
         }
     }
 
@@ -221,27 +224,32 @@ class Racer {
         let maxY = allRacers.map { $0.position.y }.max() ?? position.y
         let slowestHumanY = humanRacers.map { $0.position.y }.min() ?? position.y
 
-        // CPUs ALWAYS STAY BEHIND SLOWEST HUMAN (but never off-screen)
+        // CPU positioning helpers
         let distanceBehind = maxY - position.y
         let distanceAheadOfSlowestHuman = position.y - slowestHumanY
 
         var speedMultiplier: CGFloat = 1.0
 
-        // Priority 1: Never pass the slowest human player
-        if !humanRacers.isEmpty && distanceAheadOfSlowestHuman > 0 {
-            // We're ahead of slowest human - SLOW DOWN dramatically
-            speedMultiplier = 0.5  // Cut speed in half
+        // If we're slightly ahead of the slowest human, ease off a bit but don't cut dramatically
+        if !humanRacers.isEmpty && distanceAheadOfSlowestHuman > 50 {
+            // Slight slow down so CPUs don't hog the lead but stay visible
+            speedMultiplier = 0.92
         }
-        // Priority 2: Don't fall too far behind (off-screen = 600+ units)
-        else if distanceBehind > 600 {
-            // Way behind - speed up to stay on screen
-            speedMultiplier = 1.4
-        } else if distanceBehind > 400 {
-            // Getting far - moderate boost
-            speedMultiplier = 1.2
+
+        // Rubber-banding: ensure CPUs don't fall off screen and can catch up
+        if distanceBehind > 700 {
+            speedMultiplier = max(speedMultiplier, 1.6)
+        } else if distanceBehind > 500 {
+            speedMultiplier = max(speedMultiplier, 1.35)
+        } else if distanceBehind > 350 {
+            speedMultiplier = max(speedMultiplier, 1.2)
         } else if distanceBehind > 200 {
-            // Slightly behind - small boost
-            speedMultiplier = 1.1
+            speedMultiplier = max(speedMultiplier, 1.1)
+        }
+
+        // If dramatically far behind (unexpected), force a catch-up to keep them on-screen
+        if position.y < maxY - 1200 {
+            speedMultiplier = max(speedMultiplier, 1.8)
         }
 
         // Find current position on track based on Y coordinate
@@ -269,8 +277,12 @@ class Racer {
         let dy = targetPoint.y - currentTrackPoint.y
         rotation = atan2(dy, dx) - .pi / 2
 
-        // CPU SPEED: personality variation + rubber banding
-        let speed = baseSpeed * cpuPersonality * speedMultiplier * CGFloat.random(in: 0.98...1.02)
+    // CPU SPEED: personality variation + rubber banding
+    // Make deterministic bias larger so CPUs differ relatively faster
+    let deterministicBias = 1.0 + (CGFloat(player.playerNumber) * 0.005)
+    // Slightly larger per-frame jitter to create more visible variation
+    let perFrameJitter = CGFloat.random(in: -0.03...0.03)
+    let speed = baseSpeed * cpuPersonality * speedMultiplier * deterministicBias * (1.0 + perFrameJitter)
 
         // Move UPWARD with speed (always positive Y direction)
         velocity.dx = 0  // No horizontal drift
@@ -301,13 +313,15 @@ class TrackGenerator {
             let y = CGFloat(i) * segmentHeight
             let t = CGFloat(i) / CGFloat(segmentCount)  // 0 to 1
 
-            // SMOOTH WAVY PATH - like swimming through fluid
-            // Gentle curves that everyone auto-follows
-            let wave1 = sin(t * 5.0) * 250           // Main wave pattern
-            let wave2 = cos(t * 8.0 + 1.0) * 150     // Secondary wave
-            let wave3 = sin(t * 12.0 + 3.0) * 80     // Small variation
+            // SMOOTH WAVY PATH - gentler curves so lanes don't bend strongly to one side
+            // Reduce amplitudes and bias toward center to keep the track mostly vertical
+            let wave1 = sin(t * 3.0) * 120           // Main wave pattern (reduced)
+            let wave2 = cos(t * 6.0 + 1.0) * 60      // Secondary wave (reduced)
+            let wave3 = sin(t * 9.0 + 3.0) * 30      // Small variation (reduced)
 
-            currentX = wave1 + wave2 + wave3
+            var rawX = wave1 + wave2 + wave3
+            // Bias toward center (dampen lateral movement)
+            currentX = rawX * 0.45
 
             // Consistent width (simpler track)
             currentWidth = width
@@ -378,7 +392,8 @@ class GameState {
     var currentTime: TimeInterval = 0
 
     let trackLength: CGFloat = 30000  // MUCH longer track for ~90s total race
-    let trackWidth: CGFloat = 500  // Slightly narrower for tighter racing
+    // Increase track width for high-res displays and wider lanes (makes lanes much more spread out)
+    let trackWidth: CGFloat = 1400  // Wider track for 4k / mac screens
 
     func addPlayer(_ player: Player) {
         players.append(player)
@@ -395,10 +410,12 @@ class GameState {
         let startY: CGFloat = 100
         let startTrackPoint = trackPoints.first ?? TrackPoint(position: .zero, width: trackWidth)
 
-        // Assign each racer to a lane (horizontal offset)
-        let laneWidth: CGFloat = 70  // Space between racers (was 45)
-        let totalLaneWidth = CGFloat(players.count - 1) * laneWidth
-        let startLaneOffset = -totalLaneWidth / 2
+    // Assign each racer to a lane (horizontal offset)
+    // Use consistent lane width based on the track width so lane dividers and racers line up.
+    let lanes = max(players.count, 8)
+    let laneWidth: CGFloat = trackWidth / CGFloat(lanes)
+    let totalLaneWidth = CGFloat(lanes - 1) * laneWidth
+    let startLaneOffset = -totalLaneWidth / 2
 
         for (index, player) in players.enumerated() {
             // Each racer gets their own lane offset from center
@@ -416,7 +433,7 @@ class GameState {
             print("🏁 P\(player.playerNumber) assigned lane \(index + 1) (offset: \(Int(laneOffset)))")
         }
 
-        // Checkpoints ~30 SECONDS APART (baseSpeed 300 * 30s = 9000 units)
+    // Checkpoints ~30 SECONDS APART (baseSpeed 300 * 30s = 9000 units)
         // For 30000 length = 3 checkpoints (at ~10k, ~20k, ~30k)
         let checkpointInterval: CGFloat = 10000  // ~30 seconds at base speed
         for i in 0..<2 {
@@ -447,6 +464,13 @@ class GameState {
                 // Mark checkpoint as passed for these racers
                 for racer in racersAtCheckpoint {
                     racer.lastCheckpointPassed = checkpoint.id
+                }
+
+                // Prevent double-processing of this checkpoint in subsequent frames
+                // by marking it passed (so we only eliminate at most one player here).
+                // This ensures a single elimination per checkpoint crossing event.
+                if let idx = checkpoints.firstIndex(where: { $0.id == checkpoint.id }) {
+                    checkpoints[idx].passed = true
                 }
 
                 // Find last place racers (within epsilon), eliminate only ONE at random
